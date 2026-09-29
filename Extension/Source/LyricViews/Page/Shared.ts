@@ -15,7 +15,8 @@ import LyricsRenderer from "../../Modules/LyricsRenderer.ts"
 import Icons from "./Icons.ts"
 import {
 	CreateElement,
-	ToggleLanguageRomanization, IsLanguageRomanized, LanguageRomanizationChanged
+	ToggleLanguageRomanization, IsLanguageRomanized, LanguageRomanizationChanged,
+	GetUseFallbackProviders, ToggleUseFallbackProviders, UseFallbackProvidersChanged
 } from "../Shared.ts"
 
 // Shared Lyrics Behavior
@@ -129,4 +130,38 @@ export const SetupRomanizationButton = (
 		maid.Give(SongChanged.Connect(Update))
 		maid.Give(SongLyricsLoaded.Connect(Update))
 	}
+}
+
+// Handle Fallback Providers Toggling for Header Button
+export const SetupFallbackProvidersButton = (
+	fallbackToggle: HTMLButtonElement,
+	maid: Maid
+) => {
+	// Setup behavior and the tooltip
+	const ToggleState = () => ToggleUseFallbackProviders(!GetUseFallbackProviders())
+	fallbackToggle.addEventListener("click", ToggleState)
+	const tooltip = Spotify.Tippy(
+		fallbackToggle,
+		{
+			...Spotify.TippyProps,
+			content: "__WAITING__"
+		}
+	)
+	maid.Give(() => tooltip.destroy())
+
+	// Handle updating our state
+	const SetContent = (enabled: boolean): undefined => {
+		tooltip.setContent(enabled ? "Disable Fallback Providers" : "Enable Fallback Providers")
+		fallbackToggle.innerHTML = (enabled ? Icons.EnableFallbackProviders : Icons.DisableFallbackProviders)
+	}
+
+	// Handle our state changing
+	maid.Give(
+		UseFallbackProvidersChanged.Connect(
+			(enabled) => SetContent(enabled)
+		)
+	)
+
+	// Set initial state
+	SetContent(GetUseFallbackProviders())
 }

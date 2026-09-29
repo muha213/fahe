@@ -14,13 +14,27 @@ import {
 	SpotifyPlayer, SpotifyPlatform, SpotifyURI, SpotifyRequestBuilder,
 	GetSpotifyAccessToken
 } from "../Session.ts"
-import { GetExpireStore } from '../Cache.ts'
+import { GetExpireStore, GetDynamicStoreItem, SetDynamicStoreItem } from '../Cache.ts'
+
+
 
 // Our Modules
 import {
-	TransformProviderLyrics,
+	TransformProviderLyrics, SetRomanizationSeparator,
 	type ProviderLyrics, type TransformedLyrics, type RomanizedLanguage
 } from "./LyricUtilities.ts"
+
+// Lyric Providers (fallback chain)
+import {
+	FetchAMLLDBLyrics, FetchMusixmatchLyrics, FetchMusixmatchSearchLyrics,
+	FetchLRCLIBLyrics, FetchLRCLIBByISRC, FetchGeniusLyrics, FetchDirectSpotifyLyrics,
+	FetchDeezerLyrics, FetchYouTubeLyrics,
+	FetchNeteaseLyrics, FetchQQMusicLyrics, FetchKugouLyrics,
+	FetchBetterLyricsTTML, FetchBetterLyricsKugou,
+	FetchBetterLyricsLegacy, FetchBetterLyricsQQ,
+	FetchBetterLyricsUnison, FetchBetterLyricsUnisonLine,
+	FetchBiniLyrics, FetchBiniLyricsLine
+} from "./Providers.ts"
 
 // Re-export some useful types
 export type { RomanizedLanguage, TransformedLyrics }
@@ -345,8 +359,222 @@ const TransformedLyricsStore = GetExpireStore<TransformedLyrics | false>(
 	true
 )
 
+const FilterSongName = (songName: string): string => {
+	let transformedName = songName
+	for (const filter of SongNameFilters) {
+		transformedName = transformedName.replace(filter, "")
+	}
+	return transformedName
+}
+
+// Fallback providers toggle
+const FallbackProvidersKey = "UseFallbackProviders"
+export const GetUseFallbackProviders = (): boolean => (
+	GetDynamicStoreItem<boolean>("BeautifulLyrics", FallbackProvidersKey) ?? true
+)
+export const SetUseFallbackProviders = (enabled: boolean): void => {
+	SetDynamicStoreItem("BeautifulLyrics", FallbackProvidersKey, String(enabled))
+}
+
+// Provider selection
+const SelectedProviderKey = "SelectedProvider"
+export const GetSelectedProvider = (): string => (
+	GetDynamicStoreItem<string>("BeautifulLyrics", SelectedProviderKey) ?? "auto"
+)
+export const SetSelectedProvider = (provider: string): void => {
+	SetDynamicStoreItem("BeautifulLyrics", SelectedProviderKey, provider)
+}
+
 export let SongLyrics: (TransformedLyrics | undefined) = undefined
 export let HaveSongLyricsLoaded: boolean = false
+const BuildLyricsRequestURL = async (song: StreamedSongMetadata): Promise<string> => {
+	const url = new URL(`https://beautiful-lyrics.socalifornian.live/lyrics/${encodeURIComponent(song.Id)}`)
+	const track = SpotifyPlayer.data?.item
+	const metadata = track?.metadata as unknown as (TrackMetadata | undefined)
+
+	const trackName = metadata?.title || track?.name
+	if (trackName !== undefined && trackName.length > 0) {
+		url.searchParams.set("track_name", FilterSongName(trackName))
+	}
+
+	const artistNames = (
+		track?.artists
+		?.map(artist => artist.name)
+		.filter((artistName): artistName is string => artistName !== undefined && artistName.length > 0)
+		?? []
+	)
+	if ((artistNames.length === 0) && (metadata?.artist_name !== undefined) && (metadata.artist_name.length > 0)) {
+		artistNames.push(metadata.artist_name)
+	}
+	for (const artistName of artistNames) {
+		url.searchParams.append("artist_name", artistName)
+	}
+
+	const albumName = metadata?.album_title || track?.album?.name
+	if (albumName !== undefined && albumName.length > 0) {
+		url.searchParams.set("album_name", albumName)
+	}
+
+	if (Number.isFinite(song.Duration) && song.Duration > 0) {
+		url.searchParams.set("duration", String(Math.round(song.Duration)))
+	}
+
+	// Attach ISRC if available from cached track info
+	try {
+		const trackInfo = await TrackInformationStore.GetItem(song.Id)
+		const isrc = trackInfo?.external_id?.find((e: any) => e.type === "isrc")?.id
+		if (isrc !== undefined && isrc.length > 0) {
+			url.searchParams.set("isrc", isrc)
+		}
+	} catch { /* cache miss, proceed without ISRC */ }
+
+	return url.toString()
+}
+const parseArtistNamesAndFetch = (
+	fetchFn: (artist: string, title: string, duration?: number) => Promise<ProviderLyrics | undefined>,
+	rawArtist: string,
+	title: string,
+	duration?: number
+): Promise<ProviderLyrics | undefined> => {
+	const artists = rawArtist.split(/\s*[,;&]|(?:\s+feat[.])/i).map(a => a.trim()).filter(a => a.length > 0)
+	if (artists.length === 0) return fetchFn(rawArtist, title, duration)
+	return fetchAllArtists(fetchFn, artists, title, duration)
+}
+
+const fetchAllArtists = (
+	fetchFn: (artist: string, title: string, duration?: number) => Promise<ProviderLyrics | undefined>,
+	artists: string[],
+	title: string,
+	duration?: number
+): Promise<ProviderLyrics | undefined> => {
+	if (artists.length === 0) return Promise.resolve(undefined)
+	const primary = artists[0]
+	return fetchFn(primary, title, duration).then(result => {
+		if (result !== undefined) return result
+		if (artists.length > 1) return fetchFn(artists[1], title, duration)
+		return undefined
+	})
+}
+
+const FetchProviderWithMeta = (fetchFn: (artist: string, title: string, duration?: number) => Promise<ProviderLyrics | undefined>, duration?: number): Promise<ProviderLyrics | undefined> => {
+	const meta = SpotifyPlayer.data?.item?.metadata as unknown as (TrackMetadata | undefined)
+	const track = SpotifyPlayer.data?.item
+	const rawTitle = meta?.title ?? track?.name
+	if (rawTitle === undefined || rawTitle.length === 0) return Promise.resolve(undefined)
+	const title = FilterSongName(rawTitle)
+	const artistNames = (
+		track?.artists
+		?.map(artist => artist.name)
+		.filter((artistName): artistName is string => artistName !== undefined && artistName.length > 0)
+		?? []
+	)
+	if (artistNames.length === 0) {
+		const artist = meta?.artist_name
+		if (artist === undefined || artist.length === 0) return Promise.resolve(undefined)
+		return parseArtistNamesAndFetch(fetchFn, artist, title, duration)
+	}
+	return fetchAllArtists(fetchFn, artistNames, title, duration)
+}
+
+const UseSelectedProvider = (provider: string, song: StreamedSongMetadata): Promise<ProviderLyrics | false> => {
+	let providerPromise: Promise<ProviderLyrics | undefined>
+	switch (provider) {
+		case "amlldb":
+			providerPromise = FetchAMLLDBLyrics(song.Id)
+			break
+		case "musixmatch":
+			providerPromise = FetchMusixmatchLyrics(song.Id)
+			break
+		case "musixmatch-search":
+			providerPromise = FetchProviderWithMeta(FetchMusixmatchSearchLyrics)
+			break
+		case "lrclib":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				let cleanTitle = title
+				for (const filter of SongNameFilters) cleanTitle = cleanTitle.replace(filter, "")
+				return FetchLRCLIBLyrics(artist, cleanTitle.trim(), song.Duration)
+			})
+			break
+		case "deezer":
+			providerPromise = FetchProviderWithMeta(FetchDeezerLyrics, song.Duration)
+			break
+		case "youtube":
+			providerPromise = FetchProviderWithMeta(FetchYouTubeLyrics)
+			break
+		case "genius":
+			providerPromise = FetchProviderWithMeta(FetchGeniusLyrics)
+			break
+		case "spotify":
+			providerPromise = FetchDirectSpotifyLyrics(song.Id, song.InternalId)
+			break
+		case "netease":
+			providerPromise = FetchProviderWithMeta(FetchNeteaseLyrics)
+			break
+		case "qq":
+			providerPromise = FetchProviderWithMeta(FetchQQMusicLyrics)
+			break
+		case "kugou":
+			providerPromise = FetchProviderWithMeta(FetchKugouLyrics)
+			break
+		case "betterlyrics":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsTTML)
+			break
+		case "betterlyrics-kugou":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsKugou)
+			break
+		case "betterlyrics-legacy":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsLegacy)
+			break
+		case "betterlyrics-qq":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsQQ)
+			break
+		case "betterlyrics-unison":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsUnison)
+			break
+		case "betterlyrics-unison-line":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsUnisonLine)
+			break
+		case "bini":
+			providerPromise = FetchProviderWithMeta(FetchBiniLyrics)
+			break
+		case "bini-line":
+			providerPromise = FetchProviderWithMeta(FetchBiniLyricsLine)
+			break
+		default:
+			providerPromise = Promise.resolve(undefined)
+	}
+	return providerPromise.then(lyrics => lyrics ?? false)
+}
+
+// Timeout helper: resolves undefined if promise takes longer than ms
+const withTimeout = <T>(promise: Promise<T | undefined>, ms: number): Promise<T | undefined> => {
+	return Promise.race([
+		promise,
+		new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), ms))
+	])
+}
+
+// Race multiple providers in parallel, resolve with first non-undefined result or undefined
+const raceProviders = (providers: (() => Promise<ProviderLyrics | undefined>)[], timeoutMs: number): Promise<ProviderLyrics | undefined> => {
+	return new Promise(resolve => {
+		if (providers.length === 0) return resolve(undefined)
+		let pending = providers.length
+		let resolved = false
+		for (const provider of providers) {
+			withTimeout(provider(), timeoutMs).then(result => {
+				if (resolved) return
+				if (result !== undefined) {
+					resolved = true
+					resolve(result)
+				} else {
+					pending--
+					if (pending === 0) resolve(undefined)
+				}
+			})
+		}
+	})
+}
+
 const LoadSongLyrics = () => {
 	// Remove our prior lyric state
 	HaveSongLyricsLoaded = false, SongLyrics = undefined
@@ -359,6 +587,8 @@ const LoadSongLyrics = () => {
 		return
 	}
 
+	const selectedProvider = GetSelectedProvider()
+
 	// Now go through the process of loading our lyrics
 	{
 		// First determine if we have our lyrics stored already
@@ -366,20 +596,32 @@ const LoadSongLyrics = () => {
 		.then(
 			providerLyrics => {
 				if (providerLyrics === undefined) { // Otherwise, get our lyrics
+					// If a specific provider is selected, use it directly
+					if (selectedProvider !== "auto") {
+						return UseSelectedProvider(selectedProvider, songAtUpdate)
+					}
+
+					// Otherwise, use the normal chain (proxy + fallbacks)
 					return (
 						(
 							GetSpotifyAccessToken()
 							.then(
-								accessToken => fetch(
-									`https://beautiful-lyrics.socalifornian.live/lyrics/${encodeURIComponent(songAtUpdate.Id)}`,
-									// `http://localhost:8787/lyrics/${encodeURIComponent(songAtUpdate.Id)}`,
-									{
-										method: "GET",
-										headers: {
-											Authorization: `Bearer ${accessToken}`
+									async accessToken => {
+									const controller = new AbortController()
+									const timeout = globalThis.setTimeout(() => controller.abort(), 5000)
+									return fetch(
+										await BuildLyricsRequestURL(songAtUpdate),
+										{
+											method: "GET",
+											signal: controller.signal,
+											headers: {
+												Authorization: `Bearer ${accessToken}`,
+												"X-Spotify-App-Platform": SpotifyPlatform.PlatformData.app_platform,
+												"X-Spotify-App-Version": SpotifyPlatform.version
+											}
 										}
-									}
-								)
+									).finally(() => globalThis.clearTimeout(timeout))
+								}
 							)
 							.then(
 								(response) => {
@@ -401,6 +643,148 @@ const LoadSongLyrics = () => {
 									}
 								}
 							)
+						)
+						.catch(
+							() => undefined as undefined
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined && providerLyrics !== null && typeof providerLyrics === "object" && typeof providerLyrics.Type === "string") return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								const meta = SpotifyPlayer.data?.item?.metadata as unknown as (TrackMetadata | undefined)
+								const track = SpotifyPlayer.data?.item
+								const rawTitle = meta?.title ?? track?.name
+								if (rawTitle === undefined || rawTitle.length === 0) return undefined
+								const cleanTitle = FilterSongName(rawTitle)
+								const rawArtist = meta?.artist_name ?? ""
+								const firstArtist = (
+									track?.artists?.map(a => a.name).filter(n => n !== undefined && n.length > 0)[0]
+									?? rawArtist.split(/\s*[,;&]|(?:\s+feat[.])/i).map(a => a.trim()).filter(a => a.length > 0)[0]
+									?? rawArtist
+								)
+								if (firstArtist.length === 0) return undefined
+								// Fire top providers in parallel, take the first success
+								return raceProviders([
+									() => FetchMusixmatchSearchLyrics(firstArtist, cleanTitle),
+									() => FetchAMLLDBLyrics(songAtUpdate.Id),
+									() => FetchBetterLyricsTTML(firstArtist, cleanTitle),
+									() => FetchBiniLyrics(firstArtist, cleanTitle),
+									() => FetchLRCLIBLyrics(firstArtist, cleanTitle.trim(), songAtUpdate.Duration),
+									() => FetchMusixmatchLyrics(songAtUpdate.Id),
+								], 4000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchDirectSpotifyLyrics(songAtUpdate.Id, songAtUpdate.InternalId), 4000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchLRCLIBLyrics, songAtUpdate.Duration), 4000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								// Try LRCLIB by ISRC if available from cached track info
+								return TrackInformationStore.GetItem(songAtUpdate.Id).then(trackInfo => {
+									const isrc = trackInfo?.external_id?.find((e: any) => e.type === "isrc")?.id
+									if (isrc !== undefined && isrc.length > 0) {
+										return withTimeout(FetchLRCLIBByISRC(isrc), 4000)
+									}
+									return undefined
+								})
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchDeezerLyrics, songAtUpdate.Duration), 6000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchYouTubeLyrics), 6000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchGeniusLyrics), 6000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchNeteaseLyrics), 5000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchQQMusicLyrics), 5000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchKugouLyrics), 5000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsKugou), 4000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsLegacy), 4000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsQQ), 4000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsUnison), 5000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsUnisonLine), 5000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchBiniLyricsLine), 4000)
+							}
 						)
 						.then(
 							(providerLyrics) => {
@@ -430,7 +814,13 @@ const LoadSongLyrics = () => {
 					return (
 						(
 							(storedProviderLyrics === false) ? Promise.resolve<false>(false)
-							: TransformProviderLyrics(storedProviderLyrics)
+							: (
+								SetRomanizationSeparator(
+									GetDynamicStoreItem<string>("BeautifulLyrics", "RomanizationSeparator") ?? ""
+								),
+								TransformProviderLyrics(storedProviderLyrics)
+								.catch(() => storedProviderLyrics as TransformedLyrics)
+							)
 						)
 						.then(
 							transformedLyrics => {
@@ -711,6 +1101,22 @@ OnSpotifyReady.then(
 			PlayerMaid.Give(() => SpotifyPlayer.removeEventListener("onplaypause", Update))
 		}
 
+		// Handle provider changes - re-fetch lyrics
+		{
+			const ClearSongCache = (songId: string) => {
+				caches.open("Player_ProviderLyrics").then(c => c.delete(`/${songId}`))
+				caches.open("Player_TransformedLyrics").then(c => c.delete(`/${songId}`))
+			}
+			const OnProviderChanged = () => {
+				if (Song?.Type === "Streamed") {
+					ClearSongCache(Song.Id)
+				}
+				LoadSongLyrics()
+			}
+			globalThis.addEventListener("beautiful-lyrics:provider-changed", OnProviderChanged)
+			PlayerMaid.Give(() => globalThis.removeEventListener("beautiful-lyrics:provider-changed", OnProviderChanged))
+		}
+
 		// Handle timestamp updates
 		{
 			// Handle position syncing
@@ -779,10 +1185,12 @@ OnSpotifyReady.then(
 
 			// Handle frame updating
 			let lastUpdatedAt = performance.now()
+			let lastFpsTimestamp = performance.now()
 			const Update = () => {
 				// Make sure we have an update
 				if (lastUpdatedAt === undefined) {
 					lastUpdatedAt = performance.now()
+					lastFpsTimestamp = performance.now()
 					return PlayerMaid.Give(Defer(Update), "Timestep")
 				}
 
@@ -825,9 +1233,26 @@ OnSpotifyReady.then(
 						newTimestamp = syncedTimestamp, fireDeltaTime = 0
 					}
 
-					// Determine if we should even fire
+					// Always update timestamp for accuracy
 					if (newTimestamp !== undefined) {
 						Timestamp = newTimestamp
+					}
+
+					// FPS limit: skip rendering if over target
+					const fpsRaw = GetDynamicStoreItem<string>("BeautifulLyrics", "FPS")
+					const targetFps = fpsRaw ? Number(fpsRaw) : 60
+					if (targetFps < 60) {
+						const interval = 1000 / targetFps
+						if ((updatedAt - lastFpsTimestamp) < interval) {
+							lastUpdatedAt = updatedAt
+							PlayerMaid.Give(Defer(Update), "Timestep")
+							return
+						}
+						lastFpsTimestamp = updatedAt
+					}
+
+					// Fire rendering signal
+					if (newTimestamp !== undefined) {
 						TimeSteppedSignal.Fire(fireDeltaTime, ((fireDeltaTime === 0) || undefined))
 					}
 				}
@@ -844,3 +1269,5 @@ OnSpotifyReady.then(
 		}
 	}
 )
+
+

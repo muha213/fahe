@@ -13,7 +13,7 @@ import type { Maid } from "@Universal/Modules/Maid.ts"
 import { OnPreRender } from "@Universal/Modules/Scheduler.ts"
 
 // Spices
-import { GetInstantStore } from "@Spices/Spicetify/Services/Cache.ts"
+import { GetInstantStore, GetDynamicStoreItem, SetDynamicStoreItem } from "@Spices/Spicetify/Services/Cache.ts"
 import {
 	Song, SongChanged,
 	SongContext, SongContextChanged
@@ -33,7 +33,7 @@ export const Store = GetInstantStore<
 		RomanizedLanguages: {[key in RomanizedLanguage]: boolean};
 	}
 >(
-	"BeautifulLyrics/LyricViews", 1,
+	"BeautifulLyrics/LyricViews", 2,
 	{
 		CardLyricsVisible: false,
 		PlaybarDetailsHidden: false,
@@ -41,6 +41,8 @@ export const Store = GetInstantStore<
 			Chinese: false,
 			Japanese: false,
 			Korean: false,
+			Hindi: false,
+			Punjabi: false,
 		}
 	}
 )
@@ -72,6 +74,132 @@ export const ToggleLanguageRomanization = (language: RomanizedLanguage, isRomani
 
 export const IsLanguageRomanized = (language: RomanizedLanguage): boolean => {
 	return (Store.Items.RomanizedLanguages[language] === true)
+}
+
+// Fallback Providers Toggle
+const FallbackProvidersKey = "UseFallbackProviders"
+const UseFallbackProvidersChangedSignal = new Signal<(enabled: boolean) => void>()
+export const UseFallbackProvidersChanged = UseFallbackProvidersChangedSignal.GetEvent()
+
+export const GetUseFallbackProviders = (): boolean => (
+	GetDynamicStoreItem<boolean>("BeautifulLyrics", FallbackProvidersKey) ?? true
+)
+
+export const ToggleUseFallbackProviders = (enabled: boolean): void => {
+	const current = GetUseFallbackProviders()
+	if (current !== enabled) {
+		SetDynamicStoreItem("BeautifulLyrics", FallbackProvidersKey, String(enabled))
+		UseFallbackProvidersChangedSignal.Fire(enabled)
+	}
+}
+
+// Provider Selection
+export type ProviderOption = "auto" | "amlldb" | "musixmatch" | "musixmatch-search" | "lrclib" | "deezer" | "youtube" | "genius" | "spotify" | "netease" | "qq" | "kugou" | "betterlyrics" | "betterlyrics-kugou" | "betterlyrics-legacy" | "betterlyrics-qq" | "betterlyrics-unison" | "betterlyrics-unison-line" | "bini" | "bini-line"
+export const ProviderOptions: ProviderOption[] = [
+	"auto", "amlldb", "musixmatch", "musixmatch-search", "lrclib", "deezer", "youtube", "genius", "spotify",
+	"netease", "qq", "kugou",
+	"betterlyrics", "betterlyrics-kugou", "betterlyrics-legacy", "betterlyrics-qq",
+	"betterlyrics-unison", "betterlyrics-unison-line",
+	"bini", "bini-line"
+]
+export const ProviderLabels: Record<ProviderOption, string> = {
+	auto: "Auto (Default)",
+	amlldb: "AMLLDB",
+	musixmatch: "Musixmatch",
+	"musixmatch-search": "Musixmatch (Search)",
+	lrclib: "LRCLIB",
+	deezer: "Deezer",
+	youtube: "YouTube",
+	genius: "Genius",
+	spotify: "Spotify",
+	netease: "Netease",
+	qq: "QQ Music",
+	kugou: "Kugou",
+	betterlyrics: "BetterLyrics (TTML)",
+	"betterlyrics-kugou": "BetterLyrics (Kugou)",
+	"betterlyrics-legacy": "BetterLyrics (Legacy)",
+	"betterlyrics-qq": "BetterLyrics (QQ)",
+	"betterlyrics-unison": "Better Lyrics Unison",
+	"betterlyrics-unison-line": "Better Lyrics Unison (LINE)",
+	bini: "BiniLyrics",
+	"bini-line": "BiniLyrics (LINE)",
+}
+
+const SelectedProviderKey = "SelectedProvider"
+const SelectedProviderChangedSignal = new Signal<(provider: ProviderOption) => void>()
+export const SelectedProviderChanged = SelectedProviderChangedSignal.GetEvent()
+
+export const GetSelectedProvider = (): ProviderOption => (
+	GetDynamicStoreItem<ProviderOption>("BeautifulLyrics", SelectedProviderKey) ?? "auto"
+)
+
+export const SetSelectedProvider = (provider: ProviderOption): void => {
+	const current = GetSelectedProvider()
+	if (current !== provider) {
+		SetDynamicStoreItem("BeautifulLyrics", SelectedProviderKey, provider)
+		SelectedProviderChangedSignal.Fire(provider)
+		window.dispatchEvent(new CustomEvent("beautiful-lyrics:provider-changed"))
+	}
+}
+
+// Font Settings
+const FontFamilyKey = "FontFamily"
+export const GetFontFamily = (): string => (
+	GetDynamicStoreItem<string>("BeautifulLyrics", FontFamilyKey) ?? ""
+)
+export const SetFontFamily = (font: string): void => {
+	SetDynamicStoreItem("BeautifulLyrics", FontFamilyKey, font)
+	if (font) {
+		document.documentElement.style.setProperty("--bl-font-family", font)
+	} else {
+		document.documentElement.style.removeProperty("--bl-font-family")
+	}
+}
+
+// FPS / Performance Settings
+const FPSKey = "FPS"
+export const GetFPS = (): number => {
+	const v = GetDynamicStoreItem<string>("BeautifulLyrics", FPSKey)
+	return v ? Number(v) : 60
+}
+export const SetFPS = (fps: number): void => {
+	SetDynamicStoreItem("BeautifulLyrics", FPSKey, String(fps))
+}
+
+// Fullscreen Background Darkness
+const FullscreenDarknessKey = "FullscreenDarkness"
+export const GetFullscreenDarkness = (): number => {
+	const v = GetDynamicStoreItem<string>("BeautifulLyrics", FullscreenDarknessKey)
+	return v ? Number(v) : 80
+}
+export const SetFullscreenDarkness = (pct: number): void => {
+	SetDynamicStoreItem("BeautifulLyrics", FullscreenDarknessKey, String(pct))
+	const brightness = 100 - pct
+	document.documentElement.style.setProperty("--bl-fullscreen-darkness", `${brightness}%`)
+}
+
+// Romanization Separator ("" = spaces, "-" = hyphens, "." = dots)
+const RomanizationSeparatorKey = "RomanizationSeparator"
+export const GetRomanizationSeparator = (): string => (
+	GetDynamicStoreItem<string>("BeautifulLyrics", RomanizationSeparatorKey) ?? ""
+)
+export const SetRomanizationSeparator = (sep: string): void => {
+	SetDynamicStoreItem("BeautifulLyrics", RomanizationSeparatorKey, sep)
+}
+
+// Lyrics Font Size (0 = system default)
+const FontSizeKey = "FontSize"
+export const GetFontSize = (): number => {
+	const v = GetDynamicStoreItem<string>("BeautifulLyrics", FontSizeKey)
+	return v ? Number(v) : 0
+}
+export const SetFontSize = (px: number): void => {
+	SetDynamicStoreItem("BeautifulLyrics", FontSizeKey, String(px))
+	if (px > 0) {
+		document.documentElement.style.setProperty("--bl-font-size", `${px}px`)
+	} else {
+		document.documentElement.style.removeProperty("--bl-font-size")
+	}
 }
 
 // Handle applying our dynamic-background
@@ -255,4 +383,15 @@ export const ApplyDynamicBackground = (element: HTMLElement, maid: Maid) => {
 	RenderUpdate()
 
 	element.prepend(renderer.domElement)
+}
+
+// Initialize settings on load
+{
+	const font = GetFontFamily()
+	if (font) document.documentElement.style.setProperty("--bl-font-family", font)
+	const darkness = GetFullscreenDarkness()
+	const brightness = 100 - darkness
+	document.documentElement.style.setProperty("--bl-fullscreen-darkness", `${brightness}%`)
+	const fontSize = GetFontSize()
+	if (fontSize) document.documentElement.style.setProperty("--bl-font-size", `${fontSize}px`)
 }

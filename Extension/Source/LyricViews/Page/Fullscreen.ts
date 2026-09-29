@@ -46,7 +46,8 @@ import Slider from "../../Components/Slider.ts"
 import Button from "../../Components/Button.ts"
 
 // Our Modules
-import { CreateLyricsRenderer, SetupRomanizationButton } from "./Shared.ts"
+import { CreateLyricsRenderer, SetupRomanizationButton, SetupFallbackProvidersButton } from "./Shared.ts"
+import { ShowSettingsModal } from "./SettingsModal.ts"
 import { CreateElement, GetCoverArtForSong, ApplyDynamicBackground } from "../Shared.ts"
 import LyricViewIcons from "../Icons.ts"
 import Icons from "./Icons.ts"
@@ -111,8 +112,10 @@ const Container = `
 					<div class="ViewControls">
 						<button id="AddToPlaylist" class="ViewControl">${Icons.AddToPlaylist}</button>
 						<button id="Romanize" class="ViewControl"></button>
+						<button id="FallbackProviders" class="ViewControl"></button>
 						<button id="SmallerView" class="ViewControl"></button>
 						<button id="Fullscreen" class="ViewControl">${LyricViewIcons.FullscreenOpen}</button>
+						<button id="Settings" class="ViewControl">${Icons.Settings}</button>
 						<button id="Close" class="ViewControl">${Icons.CloseView}</button>
 					</div>
 					<div class="LikeState">
@@ -944,9 +947,11 @@ export default class PageView implements Giveable {
 				// Grab our controls
 				const addToPlaylistButton = viewControls.querySelector<HTMLButtonElement>("#AddToPlaylist")!
 				const romanizeButton = viewControls.querySelector<HTMLButtonElement>("#Romanize")!
+				const fallbackButton = viewControls.querySelector<HTMLButtonElement>("#FallbackProviders")!
 				const fullscreenButton = viewControls.querySelector<HTMLButtonElement>("#Fullscreen")!
 				const smallViewButton = viewControls.querySelector<HTMLButtonElement>("#SmallerView")!
 				const closeButton = viewControls.querySelector<HTMLButtonElement>("#Close")!
+				const settingsButton = viewControls.querySelector<HTMLButtonElement>("#Settings")!
 				// const toggleDetailsButton = viewControls.querySelector<HTMLButtonElement>("#ToggleDetails")!
 
 				// Handle our add to playlist button
@@ -1143,6 +1148,26 @@ export default class PageView implements Giveable {
 
 				// Setup our romanization button
 				SetupRomanizationButton(romanizeButton, UpdateLyricsRenderer, this.Maid)
+
+				// Setup our fallback providers button
+				SetupFallbackProvidersButton(fallbackButton, this.Maid)
+
+				// Handle our settings button
+				{
+					const settingsTooltip = Spotify.Tippy(
+						settingsButton,
+						{
+							...Spotify.TippyProps,
+							content: "Settings"
+						}
+					)
+					this.Maid.Give(() => settingsTooltip.destroy())
+
+					settingsButton.addEventListener(
+						"click",
+						() => ShowSettingsModal()
+					)
+				}
 			}
 
 			// Handle our like state

@@ -13,7 +13,7 @@ import PostCSS from "npm:postcss@8.4.38"
 import AutoPrefixer from "npm:autoprefixer@10.4.19"
 import CSSNano from "npm:cssnano@6.1.2"
 import CSSAdvancedNanoPreset from "npm:cssnano-preset-advanced@6.1.2"
-console.log("HELLO!")
+
 // Helper functions
 const WriteTextFile = (path: string, contents: string): Promise<void> => {
 	return (

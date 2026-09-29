@@ -26,6 +26,26 @@ body:has(.BeautifulLyricsPage) {
 		width: auto;
 		aspect-ratio: 1;
 	}
+
+	#Settings svg {
+		height: calc(var(--ViewControlSize) * 0.4);
+		width: auto;
+		aspect-ratio: 1;
+	}
+
+	#FallbackProviders {
+		svg.Enable {
+			height: calc(var(--ViewControlSize) * 0.475);
+			width: auto;
+			aspect-ratio: 1;
+		}
+
+		svg.Disable {
+			height: calc(var(--ViewControlSize) * 0.4);
+			width: auto;
+			aspect-ratio: 1;
+		}
+	}
 }
 
 .BeautifulLyricsPage {
@@ -198,7 +218,7 @@ body:has(.BeautifulLyricsPage.Fullscreen) {
 			position: absolute;
 			left: var(--PlayPanelAppliedLeftSpace);
 
-			font-family: "BeautifulLyrics" !important;
+			font-family: var(--bl-font-family), -apple-system, BlinkMacSystemFont, "SF Pro", "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif !important;
 
 			container-type: size;
 			z-index: 2;
@@ -1302,7 +1322,7 @@ body:has(.BeautifulLyricsPage.Fullscreen) {
 			position: absolute;
 			bottom: 24px;
 
-			opacity: 0;
+			opacity: 1;
 			transition: opacity .2s;
 
 			z-index: 101;
@@ -1320,16 +1340,8 @@ body:has(.BeautifulLyricsPage.Fullscreen) {
 				width: auto;
 				aspect-ratio: 1;
 			}
-		}
 
-		&:hover {
-			.ViewControls {
-				opacity: 1 !important;
-			}
-		}
-
-		&:hover {
-			.ViewControls {
+			&:hover {
 				opacity: 0.3;
 			}
 		}
