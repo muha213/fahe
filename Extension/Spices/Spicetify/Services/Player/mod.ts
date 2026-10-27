@@ -161,7 +161,13 @@ export const SetIsPlaying = (isPlaying: boolean): (false | void) => (
 	(isPlaying !== IsPlaying)
 	&& (isPlaying ? SpotifyPlayer.play() : SpotifyPlayer.pause())
 )
-export const SeekTo = (timestamp: number): void => SpotifyPlayer.seek(timestamp * 1000)
+export const SeekTo = (timestamp: number): void => {
+	Timestamp = Math.max(0, timestamp)
+	try {
+		SpotifyPlayer?.seek?.(timestamp * 1000)
+	} catch (_) {}
+	TimeSteppedSignal.Fire(0, true)
+}
 export const GetTimestampString = (): string => {
 	if (Song?.Type === "DJ") {
 		throw new Error("Cannot get Timestamp of a DJ track")
@@ -1003,29 +1009,60 @@ OnSpotifyReady.then(
 		}
 
 		// Handle playing updates
-		{
-			const Update = () => {
-				// If we have no data, then wait until we do
-				if ((SpotifyPlayer.data === undefined) || (SpotifyPlayer.data === null)) {
-					return PlayerMaid.Give(Defer(Update), "PlayingUpdate")
+		const CheckIsPlaying = (): boolean => {
+			if (typeof SpotifyPlayer?.isPlaying === "function") {
+				try {
+					return Boolean(SpotifyPlayer.isPlaying())
+				} catch (_) {}
+			}
+
+			// deno-lint-ignore no-explicit-any
+			const data = SpotifyPlayer?.data as any
+			if (data !== undefined && data !== null) {
+				if (typeof data.isPaused === "boolean") {
+					return !data.isPaused
 				}
-
-				// Now fire our event
-				const isPaused = SpotifyPlayer.data.isPaused
-				if (IsPlaying === isPaused) {
-					// Trigger an update and reflect our new state
-					IsPlaying = !isPaused
-					IsPlayingChangedSignal.Fire()
-
-					// If we pause then stop our automatic-sync since we are guaranteed to be synced on play
-					if (IsPlaying === false) {
-						PlayerMaid.Clean("AutomaticSync")
-					}
+				if (typeof data.is_paused === "boolean") {
+					return !data.is_paused
 				}
 			}
-			Update()
-			SpotifyPlayer.addEventListener("onplaypause", Update)
-			PlayerMaid.Give(() => SpotifyPlayer.removeEventListener("onplaypause", Update))
+
+			// deno-lint-ignore no-explicit-any
+			const state = SpotifyPlatform?.PlayerAPI?._state as any
+			if (state && typeof state.isPaused === "boolean") {
+				return !state.isPaused
+			}
+
+			return false
+		}
+
+		const UpdatePlayingState = () => {
+			const newIsPlaying = CheckIsPlaying()
+			if (IsPlaying !== newIsPlaying) {
+				IsPlaying = newIsPlaying
+				IsPlayingChangedSignal.Fire()
+
+				if (IsPlaying === false) {
+					PlayerMaid.Clean("AutomaticSync")
+				}
+			}
+		}
+
+		UpdatePlayingState()
+		SpotifyPlayer.addEventListener("onplaypause", UpdatePlayingState)
+		SpotifyPlayer.addEventListener("songchange", UpdatePlayingState)
+		SpotifyPlayer.addEventListener("onprogress", UpdatePlayingState)
+		PlayerMaid.Give(() => {
+			SpotifyPlayer.removeEventListener("onplaypause", UpdatePlayingState)
+			SpotifyPlayer.removeEventListener("songchange", UpdatePlayingState)
+			SpotifyPlayer.removeEventListener("onprogress", UpdatePlayingState)
+		})
+
+		// deno-lint-ignore no-explicit-any
+		const playerEventsTarget = (SpotifyPlatform?.PlayerAPI as any)?._events ?? (SpotifyPlayer as any)?.origin?._events
+		if (playerEventsTarget?.addListener) {
+			playerEventsTarget.addListener("update", UpdatePlayingState)
+			PlayerMaid.Give(() => playerEventsTarget.removeListener?.("update", UpdatePlayingState))
 		}
 
 		// Handle provider changes - re-fetch lyrics
@@ -1044,133 +1081,140 @@ OnSpotifyReady.then(
 			PlayerMaid.Give(() => globalThis.removeEventListener("beautiful-lyrics:provider-changed", OnProviderChanged))
 		}
 
-		// Handle timestamp updates
-		{
-			// Handle position syncing
-			type SyncedPostiion = ({ StartedSyncAt?: number; Position: number; })
-			let syncedPosition: (SyncedPostiion | undefined)
-
-			const syncTimings = [0.05, 0.1, 0.15, 0.75]
-			let canSyncNonLocalTimestamp = (IsPlaying ? syncTimings.length : 0)
-			SongChangedSignal.Connect(() => canSyncNonLocalTimestamp = syncTimings.length)
-			IsPlayingChangedSignal.Connect(() => canSyncNonLocalTimestamp = (IsPlaying ? syncTimings.length : 0))
-
-			const RequestPositionSync = async () => {
-				const startedAt = performance.now()
+		// Helper to query position in seconds synchronously
+		const GetPlayerPositionSeconds = (): number => {
+			if (typeof SpotifyPlayer?.getProgress === "function") {
 				try {
-					const isLocallyPlaying = SpotifyPlatform?.PlaybackAPI?._isLocal ?? true
-					let position: number | undefined
-					if (isLocallyPlaying && SpotifyPlatform?.PlayerAPI?._contextPlayer?.getPositionState) {
-						const res = await (SpotifyPlatform.PlayerAPI._contextPlayer.getPositionState({}) as Promise<{ position: bigint }>)
-						position = Number(res.position)
-					} else if (!isLocallyPlaying && SpotifyPlatform?.PlayerAPI?._state) {
-						if (canSyncNonLocalTimestamp > 0 && SpotifyPlatform?.PlayerAPI?._contextPlayer?.resume) {
-							await SpotifyPlatform.PlayerAPI._contextPlayer.resume({})
-						}
-						canSyncNonLocalTimestamp = Math.max(0, canSyncNonLocalTimestamp - 1)
-						position = IsPlaying
-							? (SpotifyPlatform.PlayerAPI._state.positionAsOfTimestamp + (Date.now() - SpotifyPlatform.PlayerAPI._state.timestamp))
-							: SpotifyPlatform.PlayerAPI._state.positionAsOfTimestamp
+					const p = SpotifyPlayer.getProgress()
+					if (typeof p === "number" && !isNaN(p) && p >= 0) {
+						return p / 1000
 					}
-
-					if (position === undefined || isNaN(position)) {
-						position = SpotifyPlayer?.getProgress?.() ?? 0
-					}
-					syncedPosition = { StartedSyncAt: startedAt, Position: position }
-				} catch (_) {
-					const progress = SpotifyPlayer?.getProgress?.() ?? 0
-					syncedPosition = { StartedSyncAt: startedAt, Position: progress }
-				}
-
-				PlayerMaid.Give(
-					Timeout(1 / 30, RequestPositionSync),
-					"TimestampPositionSync"
-				)
+				} catch (_) {}
 			}
 
-			// Handle frame updating
+			// deno-lint-ignore no-explicit-any
+			const state = SpotifyPlatform?.PlayerAPI?._state as any
+			if (state && typeof state.positionAsOfTimestamp === "number") {
+				const isPaused = Boolean(state.isPaused)
+				const base = state.positionAsOfTimestamp
+				const elapsed = (isPaused || typeof state.timestamp !== "number")
+					? 0
+					: Math.max(0, Date.now() - state.timestamp)
+				return (base + elapsed) / 1000
+			}
+
+			// deno-lint-ignore no-explicit-any
+			const data = SpotifyPlayer?.data as any
+			if (data) {
+				if (typeof data.positionAsOfTimestamp === "number") {
+					const isPaused = typeof data.isPaused === "boolean" ? data.isPaused : Boolean(data.is_paused)
+					const elapsed = (isPaused || typeof data.timestamp !== "number")
+						? 0
+						: Math.max(0, Date.now() - data.timestamp)
+					return (data.positionAsOfTimestamp + elapsed) / 1000
+				}
+				if (typeof data.progress === "number") {
+					return data.progress / 1000
+				}
+			}
+
+			return 0
+		}
+
+		// Handle timestamp updates
+		{
 			let lastUpdatedAt = performance.now()
 			let lastFpsTimestamp = performance.now()
-			const Update = () => {
-				// Make sure we have an update
-				if (lastUpdatedAt === undefined) {
-					lastUpdatedAt = performance.now()
-					lastFpsTimestamp = performance.now()
-					return PlayerMaid.Give(Defer(Update), "Timestep")
-				}
+			let isFirstFrame = true
 
-				// Determine our frame variables
-				const updatedAt = performance.now()
-				const deltaTime = ((updatedAt - lastUpdatedAt) / 1000)
+			SongChangedSignal.Connect(() => {
+				isFirstFrame = true
+			})
 
-				// Determine if we can update our timestamp at all
-				if (Song !== undefined) {
-					// Store our state for determination later
-					let newTimestamp: (number | undefined), fireDeltaTime = deltaTime
-
-					// Determine if we have a synced timestamp or not
-					const syncedTimestamp = (
-						(syncedPosition === undefined) ? undefined
-						: (
-							(syncedPosition.Position / 1000)
-							+ (
-								(syncedPosition.StartedSyncAt === undefined) ? 0
-								: ((updatedAt - syncedPosition.StartedSyncAt) / 1000)
-							)
-						)
-					)
-					syncedPosition = undefined
-
-					// Determine how we update our newTimestamp
-					if (IsPlaying) {
-						if (
-							(syncedTimestamp === undefined)
-							|| (Math.abs(syncedTimestamp - Timestamp) < 0.075)
-						) {
-							newTimestamp = (Timestamp + deltaTime), fireDeltaTime = deltaTime
-						} else {
-							newTimestamp = syncedTimestamp
-						}
-					} else if (
-						(syncedTimestamp !== undefined)
-						&& (Math.abs(syncedTimestamp - Timestamp) > 0.05)
-					) {
-						newTimestamp = syncedTimestamp, fireDeltaTime = 0
+			// deno-lint-ignore no-explicit-any
+			const OnProgress = (event?: any) => {
+				const progressMs = typeof event?.data === "number" ? event.data : undefined
+				if (progressMs !== undefined && !isNaN(progressMs) && progressMs >= 0) {
+					const progressSec = progressMs / 1000
+					if (Math.abs(progressSec - Timestamp) > 0.35) {
+						Timestamp = progressSec
+						TimeSteppedSignal.Fire(0, true)
 					}
+				}
+			}
+			SpotifyPlayer.addEventListener("onprogress", OnProgress)
+			PlayerMaid.Give(() => SpotifyPlayer.removeEventListener("onprogress", OnProgress))
 
-					// Always update timestamp for accuracy
-					if (newTimestamp !== undefined) {
-						Timestamp = newTimestamp
+			const Update = () => {
+				// Update playing state every frame to catch any missed events
+				UpdatePlayingState()
+
+				const updatedAt = performance.now()
+				const deltaTime = Math.max(0, (updatedAt - lastUpdatedAt) / 1000)
+				lastUpdatedAt = updatedAt
+
+				if (Song !== undefined) {
+					const playerPos = GetPlayerPositionSeconds()
+					let fireDeltaTime = deltaTime
+					let skipped = false
+
+					if (isFirstFrame || Timestamp < 0) {
+						Timestamp = playerPos
+						isFirstFrame = false
+						skipped = true
+						fireDeltaTime = 0
+					} else if (IsPlaying) {
+						const drift = playerPos - Timestamp
+						if (Math.abs(drift) > 0.35) {
+							// User seeked or track jumped
+							Timestamp = playerPos
+							skipped = true
+							fireDeltaTime = 0
+						} else {
+							// Continuous playback: increment by delta time
+							Timestamp += deltaTime
+							// Smooth subtle drift alignment
+							if (Math.abs(drift) > 0.04) {
+								Timestamp += drift * 0.1
+							}
+							fireDeltaTime = deltaTime
+						}
+					} else {
+						// Paused: follow scrubber if moved
+						if (Math.abs(playerPos - Timestamp) > 0.05) {
+							Timestamp = playerPos
+							skipped = true
+						}
+						fireDeltaTime = 0
 					}
 
 					// FPS limit: skip rendering if over target
 					const fpsRaw = GetDynamicStoreItem<string>("BeautifulLyrics", "FPS")
 					const targetFps = fpsRaw ? Number(fpsRaw) : 60
+					let shouldRender = true
 					if (targetFps < 60) {
 						const interval = 1000 / targetFps
 						if ((updatedAt - lastFpsTimestamp) < interval) {
-							lastUpdatedAt = updatedAt
-							PlayerMaid.Give(Defer(Update), "Timestep")
-							return
+							shouldRender = false
+						} else {
+							lastFpsTimestamp = updatedAt
 						}
-						lastFpsTimestamp = updatedAt
 					}
 
-					// Fire rendering signal
-					if (newTimestamp !== undefined) {
-						TimeSteppedSignal.Fire(fireDeltaTime, ((fireDeltaTime === 0) || undefined))
+					if (shouldRender) {
+						if (IsPlaying || skipped) {
+							TimeSteppedSignal.Fire(fireDeltaTime, skipped ? true : undefined)
+						}
 					}
+				} else {
+					isFirstFrame = true
 				}
 
-				// Update our monitor state
-				lastUpdatedAt = updatedAt
-
-				// Schedule us for another update
 				PlayerMaid.Give(Defer(Update), "Timestep")
 			}
-			
-			// Finally, sync our position THEN update
-			RequestPositionSync().then(Update)
+
+			// Immediately start the update loop
+			Update()
 		}
 	}
 )

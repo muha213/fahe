@@ -258,16 +258,23 @@ export class LyricsScroller<V extends (BaseVocals | SyncedVocals)> implements Gi
 		const currentScrollTop = this.ScrollerObject.scrollTop
 		const maximumScrollTop = (this.ScrollerObject.scrollHeight - scrollViewportHeight)
 
+		if (this.GroupDimensions.length !== this.VocalGroups.length) {
+			this.UpdateLyricHeights()
+		}
+
 		// Grab our active vocal-groups
 		const activeVocalGroups = []
 		for (const [index, vocalGroup] of (this.VocalGroups as VocalGroups<SyncedVocals>).entries()) {
 			if (vocalGroup.Vocals.some(vocal => vocal.IsActive())) {
-				activeVocalGroups.push(
-					{
-						Dimensions: this.GroupDimensions[index],
-						Group: vocalGroup
-					}
-				)
+				const dims = this.GroupDimensions[index]
+				if (dims) {
+					activeVocalGroups.push(
+						{
+							Dimensions: dims,
+							Group: vocalGroup
+						}
+					)
+				}
 			}
 		}
 
@@ -326,7 +333,11 @@ export class LyricsScroller<V extends (BaseVocals | SyncedVocals)> implements Gi
 	private ScrollTo(yPosition: number) {
 		this.AutoScrolling = true
 		this.ScrollerObject.scrollTop = yPosition
-		this.Scroller.scrollY()
+		if (typeof (this.Scroller as any)?.scrollY === "function") {
+			try {
+				(this.Scroller as any).scrollY()
+			} catch (_) {}
+		}
 	}
 
 	// Public Methods
