@@ -94,31 +94,17 @@ export const ToggleUseFallbackProviders = (enabled: boolean): void => {
 }
 
 // Provider Selection
-export type ProviderOption = "auto" | "amlldb" | "musixmatch" | "musixmatch-search" | "lrclib" | "deezer" | "youtube" | "genius" | "spotify" | "netease" | "qq" | "kugou" | "betterlyrics" | "betterlyrics-kugou" | "betterlyrics-legacy" | "betterlyrics-qq" | "betterlyrics-unison" | "betterlyrics-unison-line" | "bini" | "bini-line"
+export type ProviderOption = "auto" | "lrclib" | "spotify" | "lyricsovh" | "betterlyrics-unison" | "betterlyrics-unison-line" | "bini" | "bini-line"
 export const ProviderOptions: ProviderOption[] = [
-	"auto", "amlldb", "musixmatch", "musixmatch-search", "lrclib", "deezer", "youtube", "genius", "spotify",
-	"netease", "qq", "kugou",
-	"betterlyrics", "betterlyrics-kugou", "betterlyrics-legacy", "betterlyrics-qq",
+	"auto", "lrclib", "spotify", "lyricsovh",
 	"betterlyrics-unison", "betterlyrics-unison-line",
 	"bini", "bini-line"
 ]
 export const ProviderLabels: Record<ProviderOption, string> = {
 	auto: "Auto (Default)",
-	amlldb: "AMLLDB",
-	musixmatch: "Musixmatch",
-	"musixmatch-search": "Musixmatch (Search)",
 	lrclib: "LRCLIB",
-	deezer: "Deezer",
-	youtube: "YouTube",
-	genius: "Genius",
 	spotify: "Spotify",
-	netease: "Netease",
-	qq: "QQ Music",
-	kugou: "Kugou",
-	betterlyrics: "BetterLyrics (TTML)",
-	"betterlyrics-kugou": "BetterLyrics (Kugou)",
-	"betterlyrics-legacy": "BetterLyrics (Legacy)",
-	"betterlyrics-qq": "BetterLyrics (QQ)",
+	lyricsovh: "Lyrics.ovh",
 	"betterlyrics-unison": "Better Lyrics Unison",
 	"betterlyrics-unison-line": "Better Lyrics Unison (LINE)",
 	bini: "BiniLyrics",
@@ -224,8 +210,9 @@ export const GetCoverArtForSong = (): [string, (number | undefined)] => {
 		: Song?.CoverArt.Big
 	)
 	if (coverArt === undefined) {
+		// Local SVG placeholder (base64) - no external dependency
 		return [
-			"https://images.socalifornian.live/SongPlaceholderFull.png",
+			"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIiB2aWV3Qm94PSIwIDAgMzAwIDMwMCI+CiAgPHJlY3QgZmlsbD0iIzFhMWExYSIgd2lkdGg9IjMwMCIgaGVpZ2h0PSIzMDAiLz4KICA8Y2lyY2xlIGN4PSIxNTAiIGN5PSIxMjAiIHI9IjUwIiBmaWxsPSIjMzMzIiBvcGFjaXR5PSIwLjUiLz4KICA8cGF0aCBkPSJNMTUwIDIyMCBRMTUwIDIwMCAxMzAgMjAwIFExMTAgMjAwIDExMCAyMjAgUTExMCAyNDAgMTMwIDI0MCBRMTUwIDI0MCAxNTAgMjIwIiBmaWxsPSIjNDQ0Ii8+CiAgPHBhdGggZD0iTTE1MCAyMjAgUTE1MCAyMDAgMTcwIDIwMCBRMTkwIDIwMCAxOTAgMjIwIFExOTAgMjQwIDE3MCAyNDAgUTE1MCAyNDAgMTUwIDIyMCIgZmlsbD0iIzQ0NCIvPgo8L3N2Zz4=",
 			(75 + ((360 - 75) * seedrandom(Song?.Uri)()))
 		]
 	} else {

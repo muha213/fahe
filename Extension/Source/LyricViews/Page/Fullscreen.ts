@@ -208,7 +208,7 @@ export default class PageView implements Giveable {
 	// Constructor
 	constructor(makeSpotifyFullscreen?: true) {
 		// Determine our last-page
-		const lastPage = SpotifyHistory.entries[SpotifyHistory.entries.length - 2]
+		const lastPage = SpotifyHistory?.entries?.[SpotifyHistory.entries.length - 2]
 		if ((lastPage !== undefined) && (lastPage.pathname.startsWith("/BeautifulLyrics") === false)) {
 			LastPageLocation = lastPage.pathname
 		}
@@ -1663,15 +1663,11 @@ export default class PageView implements Giveable {
 							}
 						}
 
-						if (SongDetails.IsLocal) {
+						if (SongDetails.IsLocal || !SongDetails.Album.ReleaseDate?.year) {
 							trackReleaseDate.textContent = ""
-						} else {
-							trackReleaseDate.textContent = SongDetails.Album.ReleaseDate.year.toString()
-						}
-
-						if (SongDetails.IsLocal) {
 							trackReleaseDetailsSeparator.style.display = "none"
 						} else {
+							trackReleaseDate.textContent = SongDetails.Album.ReleaseDate.year.toString()
 							trackReleaseDetailsSeparator.style.display = ""
 						}
 					}
@@ -1892,10 +1888,12 @@ export default class PageView implements Giveable {
 		// Finally, parent our container
 		document.body.appendChild(container)
 
-		// Hide the main content for memory/rendering performance
-		const mainContent = document.querySelector<HTMLDivElement>("#main")!
-		mainContent.style.display = "none"
-		this.Maid.Give(() => mainContent.style.display = "")
+		// Hide the main content for memory/rendering performance (if available)
+		const mainContent = document.querySelector<HTMLDivElement>("#main, .Root__main-view, .Root__top-container")
+		if (mainContent !== null) {
+			mainContent.style.display = "none"
+			this.Maid.Give(() => mainContent.style.display = "")
+		}
 
 		// Handle watching for no-songs
 		{

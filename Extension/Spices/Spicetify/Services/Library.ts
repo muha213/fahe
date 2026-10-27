@@ -29,55 +29,61 @@ type CollectedItem = (CollectedPlaylist | CollectedFolder)
 export const GetPlaylistsAndFolders = (
 	sortOrder: PlaylistSortOrder = "Recents", fromFolderUri: string = "",
 	textFilter: string = ""
-): Promise<CollectedItem[]> => (
-	SpotifyPlatform.LibraryAPI.getContents(
-		{
-			offset: 0,
-			limit: 10000, // Spotify limit
-			filters: ["2"],
-			sortOrder: PlaylistSortOrders[sortOrder],
-			textFilter,
-			includeLocalFiles: false,
-			includeYourEpisodes: false,
-			includeLikedSongs: false,
-			includePreReleases: false,
-			filtersPickedByUser: false,
-			folderUri: fromFolderUri
-		}
-	)
-	.then(
-		(
-			result: {
-				items: (
-					PlaylistMetadata
-					| { type: "folder", uri: string, name: string }
-				)[]
+): Promise<CollectedItem[]> => {
+	if (!SpotifyPlatform?.LibraryAPI?.getContents) {
+		return Promise.resolve([])
+	}
+	return (
+		SpotifyPlatform.LibraryAPI.getContents(
+			{
+				offset: 0,
+				limit: 10000, // Spotify limit
+				filters: ["2"],
+				sortOrder: PlaylistSortOrders[sortOrder],
+				textFilter,
+				includeLocalFiles: false,
+				includeYourEpisodes: false,
+				includeLikedSongs: false,
+				includePreReleases: false,
+				filtersPickedByUser: false,
+				folderUri: fromFolderUri
 			}
-		) => {
-			const basket: CollectedItem[] = []
-			for (const item of result.items) {
-				if (item.type === "playlist") {
-					basket.push(
-						{
-							Type: "Playlist",
-							Uri: item.uri,
-							CanAddTo: (item as unknown as { canAddTo: boolean }).canAddTo
-						}
-					)
-				} else if (item.type === "folder") {
-					basket.push(
-						{
-							Type: "Folder",
-							Uri: item.uri,
-							Name: item.name
-						}
-					)
+		)
+		.then(
+			(
+				result: {
+					items?: (
+						PlaylistMetadata
+						| { type: "folder", uri: string, name: string }
+					)[]
 				}
+			) => {
+				const basket: CollectedItem[] = []
+				for (const item of (result?.items ?? [])) {
+					if (item.type === "playlist") {
+						basket.push(
+							{
+								Type: "Playlist",
+								Uri: item.uri,
+								CanAddTo: (item as unknown as { canAddTo: boolean }).canAddTo
+							}
+						)
+					} else if (item.type === "folder") {
+						basket.push(
+							{
+								Type: "Folder",
+								Uri: item.uri,
+								Name: item.name
+							}
+						)
+					}
+				}
+				return basket
 			}
-			return basket
-		}
+		)
+		.catch(() => [])
 	)
-)
+}
 
 // Playlist Information Functions
 type PlaylistContentsResponse = {
@@ -91,38 +97,56 @@ type PlaylistContents = {
 	Items: PlaylistItemMetadata[];
 }
 
-export const GetPlaylistDetails = (playlistUri: string): Promise<PlaylistMetadata> => (
-	SpotifyPlatform.PlaylistAPI.getMetadata(playlistUri)
-)
-export const GetPlaylistContents = (playlistUri: string): Promise<PlaylistContents> => (
-	SpotifyPlatform.PlaylistAPI.getContents(playlistUri)
-	.then((contents: PlaylistContentsResponse) => ({ ItemCount: contents.totalLength, Items: contents.items }))
-)
+export const GetPlaylistDetails = (playlistUri: string): Promise<PlaylistMetadata> => {
+	if (!SpotifyPlatform?.PlaylistAPI?.getMetadata) {
+		return Promise.reject("PlaylistAPI not available")
+	}
+	return SpotifyPlatform.PlaylistAPI.getMetadata(playlistUri)
+}
+
+export const GetPlaylistContents = (playlistUri: string): Promise<PlaylistContents> => {
+	if (!SpotifyPlatform?.PlaylistAPI?.getContents) {
+		return Promise.resolve({ ItemCount: 0, Items: [] })
+	}
+	return (
+		SpotifyPlatform.PlaylistAPI.getContents(playlistUri)
+		.then((contents: PlaylistContentsResponse) => ({ ItemCount: contents?.totalLength ?? 0, Items: contents?.items ?? [] }))
+		.catch(() => ({ ItemCount: 0, Items: [] }))
+	)
+}
 
 // Playlist Modification Functions
-export const AddToPlaylist = (playlistUri: string, trackUris: string[]): Promise<void> => (
-	SpotifyPlatform.PlaylistAPI.add(playlistUri, trackUris, { after: "end" })
-)
-export const RemoveFromPlaylist = (playlistUri: string, tracks: { uri: string, uid: string }[]): Promise<void> => (
-	SpotifyPlatform.PlaylistAPI.remove(playlistUri, tracks)
-)
+export const AddToPlaylist = (playlistUri: string, trackUris: string[]): Promise<void> => {
+	if (!SpotifyPlatform?.PlaylistAPI?.add) return Promise.resolve()
+	return SpotifyPlatform.PlaylistAPI.add(playlistUri, trackUris, { after: "end" })
+}
+export const RemoveFromPlaylist = (playlistUri: string, tracks: { uri: string, uid: string }[]): Promise<void> => {
+	if (!SpotifyPlatform?.PlaylistAPI?.remove) return Promise.resolve()
+	return SpotifyPlatform.PlaylistAPI.remove(playlistUri, tracks)
+}
 
 // Creation Functions
-export const CreateFolder = (name: string, parentFolderUri?: string): Promise<string> => (
-	SpotifyPlatform.RootlistAPI.createFolder(
-		name,
-		(
-			(parentFolderUri !== undefined) ? { after: { uri: parentFolderUri } }
-			: undefined
-		)
-	).then((result: { uri: string }) => result.uri)
-)
-export const CreatePlaylist = (name: string, parentFolderUri?: string): Promise<string> => (
-	SpotifyPlatform.RootlistAPI.createPlaylist(
-		name,
-		(
-			(parentFolderUri !== undefined) ? { after: { uri: parentFolderUri } }
-			: undefined
+export const CreateFolder = (name: string, parentFolderUri?: string): Promise<string> => {
+	if (!SpotifyPlatform?.RootlistAPI?.createFolder) return Promise.resolve("")
+	return (
+		SpotifyPlatform.RootlistAPI.createFolder(
+			name,
+			(
+				(parentFolderUri !== undefined) ? { after: { uri: parentFolderUri } }
+				: undefined
+			)
+		).then((result: { uri: string }) => result?.uri ?? "")
+	)
+}
+export const CreatePlaylist = (name: string, parentFolderUri?: string): Promise<string> => {
+	if (!SpotifyPlatform?.RootlistAPI?.createPlaylist) return Promise.resolve("")
+	return (
+		SpotifyPlatform.RootlistAPI.createPlaylist(
+			name,
+			(
+				(parentFolderUri !== undefined) ? { after: { uri: parentFolderUri } }
+				: undefined
+			)
 		)
 	)
-)
+}

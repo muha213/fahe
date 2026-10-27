@@ -12,6 +12,7 @@ import {
 	GlobalMaid,
 	OnSpotifyReady,
 	SpotifyPlayer, SpotifyPlatform, SpotifyURI, SpotifyRequestBuilder,
+	SpotifyInternalFetch, SpotifyFetch,
 	GetSpotifyAccessToken
 } from "../Session.ts"
 import { GetExpireStore, GetDynamicStoreItem, SetDynamicStoreItem } from '../Cache.ts'
@@ -26,12 +27,8 @@ import {
 
 // Lyric Providers (fallback chain)
 import {
-	FetchAMLLDBLyrics, FetchMusixmatchLyrics, FetchMusixmatchSearchLyrics,
-	FetchLRCLIBLyrics, FetchLRCLIBByISRC, FetchGeniusLyrics, FetchDirectSpotifyLyrics,
-	FetchDeezerLyrics, FetchYouTubeLyrics,
-	FetchNeteaseLyrics, FetchQQMusicLyrics, FetchKugouLyrics,
-	FetchBetterLyricsTTML, FetchBetterLyricsKugou,
-	FetchBetterLyricsLegacy, FetchBetterLyricsQQ,
+	FetchLRCLIBLyrics, FetchLRCLIBByISRC, FetchDirectSpotifyLyrics,
+	FetchLyricsOvh,
 	FetchBetterLyricsUnison, FetchBetterLyricsUnisonLine,
 	FetchBiniLyrics, FetchBiniLyricsLine
 } from "./Providers.ts"
@@ -253,23 +250,25 @@ const LoadSongDetails = () => {
 		.then(
 			trackInformation => {
 				if (trackInformation === undefined) {
-					// Create our base-build
-					const requestBuilder = (
-						SpotifyRequestBuilder.build()
-						.withHost("https://spclient.wg.spotify.com/metadata/4")
-						.withPath(`/track/${songAtUpdate.InternalId}`)
-						.withEndpointIdentifier(`/track/${songAtUpdate.InternalId}`)
-					)
+					let fetchPromise: Promise<TrackInformationResponse | { ok: boolean, body: TrackInformation }>
+					if (SpotifyRequestBuilder !== undefined) {
+						const requestBuilder = (
+							SpotifyRequestBuilder.build()
+							.withHost("https://spclient.wg.spotify.com/metadata/4")
+							.withPath(`/track/${songAtUpdate.InternalId}`)
+							.withEndpointIdentifier(`/track/${songAtUpdate.InternalId}`)
+						)
+						requestBuilder.UseExistingPromise = true
+						fetchPromise = requestBuilder.send() as Promise<TrackInformationResponse>
+					} else if (SpotifyInternalFetch !== undefined) {
+						fetchPromise = (SpotifyInternalFetch.get(`https://spclient.wg.spotify.com/metadata/4/track/${songAtUpdate.InternalId}`) as Promise<any>).then(body => ({ ok: true, body }))
+					} else {
+						fetchPromise = SpotifyFetch(`https://spclient.wg.spotify.com/metadata/4/track/${songAtUpdate.InternalId}`).then(async (r: Response) => ({ ok: r.ok, body: await r.json() }))
+					}
 
-					// Mark our request-builder to default to existing promise
-					requestBuilder.UseExistingPromise = true
-
-					// Now send our request
 					return (
-						// SpotifyFetch(`https://api.spotify.com/v1/tracks/${songAtUpdate.Id}`)
-						(requestBuilder.send() as Promise<TrackInformationResponse>)
-						// Uncaught on purpose - it should rarely ever fail
-						.catch(error => {console.warn(error); throw error})
+						fetchPromise
+						.catch(error => { console.warn(error); throw error })
 						.then(
 							response => {
 								if (response.ok === false) {
@@ -279,9 +278,9 @@ const LoadSongDetails = () => {
 							}
 						)
 						.then(
-							(trackInformation) => {
-								TrackInformationStore.SetItem(songAtUpdate.Id, trackInformation)
-								return trackInformation
+							(trackInfo) => {
+								TrackInformationStore.SetItem(songAtUpdate.Id, trackInfo)
+								return trackInfo
 							}
 						)
 					)
@@ -307,10 +306,10 @@ const LoadSongDetails = () => {
 				SongDetails = {
 					IsLocal: false,
 
-					ISRC: trackInformation.external_id.find(entry => entry.type === "isrc")!.id,
+					ISRC: trackInformation.external_id?.find((entry: any) => entry.type === "isrc")?.id ?? "",
 					Name: transformedName,
-					Artists: trackInformation.artist.map(
-						artist => (
+					Artists: (trackInformation.artist ?? []).map(
+						(artist: any) => (
 							{
 								InternalId: artist.gid,
 								Id: SpotifyURI.hexToId(artist.gid),
@@ -319,10 +318,10 @@ const LoadSongDetails = () => {
 						)
 					),
 					Album: {
-						InternalId: trackInformation.album.gid,
-						Id: SpotifyURI.hexToId(trackInformation.album.gid),
-						Artists: trackInformation.album.artist.map(
-							artist => (
+						InternalId: trackInformation.album?.gid ?? "",
+						Id: SpotifyURI.hexToId(trackInformation.album?.gid ?? ""),
+						Artists: (trackInformation.album?.artist ?? []).map(
+							(artist: any) => (
 								{
 									InternalId: artist.gid,
 									Id: SpotifyURI.hexToId(artist.gid),
@@ -330,7 +329,7 @@ const LoadSongDetails = () => {
 								}
 							)
 						),
-						ReleaseDate: trackInformation.album.date
+						ReleaseDate: trackInformation.album?.date ?? { year: 0 }
 					},
 
 					Raw: trackInformation
@@ -338,6 +337,31 @@ const LoadSongDetails = () => {
 				SongDetailsLoadedSignal.Fire()
 			}
 		)
+		.catch(error => {
+			console.warn("Beautiful Lyrics: Failed to fetch metadata, falling back to basic track info", error)
+			const item = SpotifyPlayer.data?.item
+			if (item === undefined || Song !== songAtUpdate) return
+			const artists = (item.artists ?? []).map((a: any) => ({
+				InternalId: SpotifyURI.idToHex(SpotifyURI.from(a.uri)?.id ?? ""),
+				Id: SpotifyURI.from(a.uri)?.id ?? "",
+				Name: a.name
+			}))
+			SongDetails = {
+				IsLocal: false,
+				ISRC: "",
+				Name: FilterSongName(item.name),
+				Artists: artists,
+				Album: {
+					InternalId: SpotifyURI.idToHex(SpotifyURI.from(item.album?.uri)?.id ?? ""),
+					Id: SpotifyURI.from(item.album?.uri)?.id ?? "",
+					Artists: artists,
+					ReleaseDate: { year: 0 }
+				},
+				Raw: undefined as unknown as TrackInformation
+			}
+			HaveSongDetailsLoaded = true
+			SongDetailsLoadedSignal.Fire()
+		})
 	}
 }
 
@@ -479,15 +503,6 @@ const FetchProviderWithMeta = (fetchFn: (artist: string, title: string, duration
 const UseSelectedProvider = (provider: string, song: StreamedSongMetadata): Promise<ProviderLyrics | false> => {
 	let providerPromise: Promise<ProviderLyrics | undefined>
 	switch (provider) {
-		case "amlldb":
-			providerPromise = FetchAMLLDBLyrics(song.Id)
-			break
-		case "musixmatch":
-			providerPromise = FetchMusixmatchLyrics(song.Id)
-			break
-		case "musixmatch-search":
-			providerPromise = FetchProviderWithMeta(FetchMusixmatchSearchLyrics)
-			break
 		case "lrclib":
 			providerPromise = FetchProviderWithMeta((artist, title) => {
 				let cleanTitle = title
@@ -495,38 +510,11 @@ const UseSelectedProvider = (provider: string, song: StreamedSongMetadata): Prom
 				return FetchLRCLIBLyrics(artist, cleanTitle.trim(), song.Duration)
 			})
 			break
-		case "deezer":
-			providerPromise = FetchProviderWithMeta(FetchDeezerLyrics, song.Duration)
-			break
-		case "youtube":
-			providerPromise = FetchProviderWithMeta(FetchYouTubeLyrics)
-			break
-		case "genius":
-			providerPromise = FetchProviderWithMeta(FetchGeniusLyrics)
-			break
 		case "spotify":
 			providerPromise = FetchDirectSpotifyLyrics(song.Id, song.InternalId)
 			break
-		case "netease":
-			providerPromise = FetchProviderWithMeta(FetchNeteaseLyrics)
-			break
-		case "qq":
-			providerPromise = FetchProviderWithMeta(FetchQQMusicLyrics)
-			break
-		case "kugou":
-			providerPromise = FetchProviderWithMeta(FetchKugouLyrics)
-			break
-		case "betterlyrics":
-			providerPromise = FetchProviderWithMeta(FetchBetterLyricsTTML)
-			break
-		case "betterlyrics-kugou":
-			providerPromise = FetchProviderWithMeta(FetchBetterLyricsKugou)
-			break
-		case "betterlyrics-legacy":
-			providerPromise = FetchProviderWithMeta(FetchBetterLyricsLegacy)
-			break
-		case "betterlyrics-qq":
-			providerPromise = FetchProviderWithMeta(FetchBetterLyricsQQ)
+		case "lyricsovh":
+			providerPromise = FetchProviderWithMeta(FetchLyricsOvh)
 			break
 		case "betterlyrics-unison":
 			providerPromise = FetchProviderWithMeta(FetchBetterLyricsUnison)
@@ -601,52 +589,42 @@ const LoadSongLyrics = () => {
 						return UseSelectedProvider(selectedProvider, songAtUpdate)
 					}
 
-					// Otherwise, use the normal chain (proxy + fallbacks)
-					return (
-						(
-							GetSpotifyAccessToken()
-							.then(
-									async accessToken => {
-									const controller = new AbortController()
-									const timeout = globalThis.setTimeout(() => controller.abort(), 5000)
-									return fetch(
-										await BuildLyricsRequestURL(songAtUpdate),
-										{
-											method: "GET",
-											signal: controller.signal,
-											headers: {
-												Authorization: `Bearer ${accessToken}`,
-												"X-Spotify-App-Platform": SpotifyPlatform.PlatformData.app_platform,
-												"X-Spotify-App-Version": SpotifyPlatform.version
-											}
-										}
-									).finally(() => globalThis.clearTimeout(timeout))
-								}
-							)
-							.then(
-								(response) => {
-									if (response.ok === false) {
-										throw `Failed to load Lyrics for Track (${
-											songAtUpdate.Id
-										}), Error: ${response.status} ${response.statusText}`
-									}
-				
-									return response.text()
-								}
-							)
-							.then(
-								text => {
-									if (text.length === 0) {
-										return undefined
-									} else {
-										return JSON.parse(text)
-									}
-								}
-							)
+				// Otherwise, use the normal chain (author backend + fallbacks)
+				return (
+					(
+						GetSpotifyAccessToken()
+						.then(
+							async (): Promise<Response | undefined> => {
+								// Author's lyrics backend is offline; skip directly to fallback providers
+								return undefined
+							}
 						)
-						.catch(
-							() => undefined as undefined
+						.then(
+							(response) => {
+								if (response === undefined || response.ok === false) {
+									throw `Failed to load Lyrics for Track (${
+										songAtUpdate.Id
+									}), Error: ${
+										(response === undefined) ? "No response" : `${response.status} ${response.statusText}`
+									}`
+								}
+
+								return response.text()
+							}
 						)
+						.then(
+							text => {
+								if (text.length === 0) {
+									return undefined
+								} else {
+									return JSON.parse(text)
+								}
+							}
+						)
+					)
+					.catch(
+						() => undefined as undefined
+					)
 						.then(
 							(providerLyrics) => {
 								if (providerLyrics !== undefined && providerLyrics !== null && typeof providerLyrics === "object" && typeof providerLyrics.Type === "string") return providerLyrics
@@ -663,15 +641,13 @@ const LoadSongLyrics = () => {
 									?? rawArtist
 								)
 								if (firstArtist.length === 0) return undefined
-								// Fire top providers in parallel, take the first success
-								return raceProviders([
-									() => FetchMusixmatchSearchLyrics(firstArtist, cleanTitle),
-									() => FetchAMLLDBLyrics(songAtUpdate.Id),
-									() => FetchBetterLyricsTTML(firstArtist, cleanTitle),
-									() => FetchBiniLyrics(firstArtist, cleanTitle),
-									() => FetchLRCLIBLyrics(firstArtist, cleanTitle.trim(), songAtUpdate.Duration),
-									() => FetchMusixmatchLyrics(songAtUpdate.Id),
-								], 4000)
+							// Fire top providers in parallel, take the first success
+							return raceProviders([
+								() => FetchLRCLIBLyrics(firstArtist, cleanTitle.trim(), songAtUpdate.Duration),
+								() => FetchBetterLyricsUnison(firstArtist, cleanTitle),
+								() => FetchBiniLyrics(firstArtist, cleanTitle),
+								() => FetchLyricsOvh(firstArtist, cleanTitle),
+							], 4000)
 							}
 						)
 						.then(
@@ -702,76 +678,13 @@ const LoadSongLyrics = () => {
 								})
 							}
 						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchDeezerLyrics, songAtUpdate.Duration), 6000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchYouTubeLyrics), 6000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchGeniusLyrics), 6000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchNeteaseLyrics), 5000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchQQMusicLyrics), 5000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchKugouLyrics), 5000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsKugou), 4000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsLegacy), 4000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsQQ), 4000)
-							}
-						)
-						.then(
-							(providerLyrics) => {
-								if (providerLyrics !== undefined) return providerLyrics
-								if (GetUseFallbackProviders() === false) return undefined
-								return withTimeout(FetchProviderWithMeta(FetchBetterLyricsUnison), 5000)
-							}
-						)
+					.then(
+						(providerLyrics) => {
+							if (providerLyrics !== undefined) return providerLyrics
+							if (GetUseFallbackProviders() === false) return undefined
+							return withTimeout(FetchProviderWithMeta(FetchBetterLyricsUnison), 5000)
+						}
+					)
 						.then(
 							(providerLyrics) => {
 								if (providerLyrics !== undefined) return providerLyrics
@@ -862,7 +775,7 @@ OnSpotifyReady.then(
 			This is so we don't pollute the console with faulty errors/warnings
 			about duplicate requests being sent around the same time.
 		*/
-		{
+		if (SpotifyRequestBuilder !== undefined) {
 			// Reset any pending requests
 			SpotifyRequestBuilder.resetPendingRequests()
 
@@ -920,9 +833,7 @@ OnSpotifyReady.then(
 		{
 			const OnSongChange = () => {
 				// Wait until we have our SpotifyPlayer data
-				if (SpotifyPlayer.data?.context === undefined) {
-					return PlayerMaid.Give(Defer(OnSongChange), "SongChangeUpdate")
-				} else if (SpotifyPlayer.data === null) {
+				if (SpotifyPlayer.data === undefined || SpotifyPlayer.data === null) {
 					if (Song !== undefined) {
 						Song = undefined
 						SongChangedSignal.Fire()
@@ -938,9 +849,16 @@ OnSpotifyReady.then(
 
 				// Make sure that this is a Song and not any other type of track
 				const track = SpotifyPlayer.data.item
+				if (track === undefined || track === null) {
+					if (Song !== undefined) {
+						Song = undefined
+						SongChangedSignal.Fire()
+					}
+					return
+				}
 				const isASong = (track.type === "track")
-				const isDJ = ((track.type === "unknown") && (track.provider.startsWith("narration")))
-				if ((track === undefined) || ((isASong === false) && (isDJ === false))) {
+				const isDJ = ((track.type === "unknown") && (track.provider?.startsWith("narration") ?? false))
+				if ((isASong === false) && (isDJ === false)) {
 					Song = undefined
 				} else {
 					// Set our Timestamp to 0 immediately
@@ -956,13 +874,13 @@ OnSpotifyReady.then(
 							Uri: track.uri,
 							Action: track.name,
 							CoverArt: {
-								Large: metadata.image_xlarge_url,
-								Big: metadata.image_large_url,
-								Default: metadata.image_url,
-								Small: metadata.image_small_url
+								Large: metadata?.image_xlarge_url,
+								Big: metadata?.image_large_url,
+								Default: metadata?.image_url,
+								Small: metadata?.image_small_url
 							}
 						}
-						: (metadata.is_local === "true") ? {
+						: (metadata?.is_local === "true") ? {
 							Type: "Local",
 
 							Uri: track.uri,
@@ -977,10 +895,10 @@ OnSpotifyReady.then(
 							InternalId: SpotifyURI.idToHex(uri!.id!),
 							Duration: (SpotifyPlayer.data.duration / 1000),
 							CoverArt: {
-								Large: metadata.image_xlarge_url,
-								Big: metadata.image_large_url,
-								Default: metadata.image_url,
-								Small: metadata.image_small_url
+								Large: metadata?.image_xlarge_url,
+								Big: metadata?.image_large_url,
+								Default: metadata?.image_url,
+								Small: metadata?.image_small_url
 							}
 						}
 					)
@@ -995,12 +913,15 @@ OnSpotifyReady.then(
 				SongChangedSignal.Fire()
 
 				// Determine if our context changed
-				if ((SpotifyPlayer.data.hasContext === false) && (SongContext !== undefined)) {
+				if ((SpotifyPlayer.data.hasContext === false || !SpotifyPlayer.data.context) && (SongContext !== undefined)) {
 					SongContext = undefined
 					SongContextChangedSignal.Fire()
 				} else if (
-					(SongContext === undefined)
-					|| (SongContext.Uri !== SpotifyPlayer.data.context.uri)
+					SpotifyPlayer.data.context
+					&& (
+						(SongContext === undefined)
+						|| (SongContext.Uri !== SpotifyPlayer.data.context.uri)
+					)
 				) {
 					const contextMetadata = SpotifyPlayer.data.context.metadata as unknown as {
 						context_description: string;
@@ -1008,8 +929,8 @@ OnSpotifyReady.then(
 					}
 					const baseSongContext = {
 						Uri: SpotifyPlayer.data.context.uri,
-						CoverArt: ((contextMetadata.image_url === "") ? undefined : contextMetadata.image_url),
-						Description: contextMetadata.context_description
+						CoverArt: ((contextMetadata?.image_url === "") ? undefined : contextMetadata?.image_url),
+						Description: contextMetadata?.context_description
 					}
 
 					if (baseSongContext.Uri === "spotify:internal:local-files") {
@@ -1071,8 +992,14 @@ OnSpotifyReady.then(
 				}
 			}
 			OnUpdate()
-			SpotifyPlatform.PlayerAPI._events.addListener("update", OnUpdate)
-			PlayerMaid.Give(() => SpotifyPlatform.PlayerAPI._events.removeListener("update", OnUpdate))
+			// deno-lint-ignore no-explicit-any
+			const eventsTarget = (SpotifyPlatform?.PlayerAPI as any)?._events ?? (SpotifyPlayer as any)?.origin?._events
+			if (eventsTarget?.addListener) {
+				eventsTarget.addListener("update", OnUpdate)
+				PlayerMaid.Give(() => eventsTarget.removeListener?.("update", OnUpdate))
+			}
+			SpotifyPlayer.addEventListener("songchange", OnUpdate)
+			PlayerMaid.Give(() => SpotifyPlayer.removeEventListener("songchange", OnUpdate))
 		}
 
 		// Handle playing updates
@@ -1128,58 +1055,36 @@ OnSpotifyReady.then(
 			SongChangedSignal.Connect(() => canSyncNonLocalTimestamp = syncTimings.length)
 			IsPlayingChangedSignal.Connect(() => canSyncNonLocalTimestamp = (IsPlaying ? syncTimings.length : 0))
 
-			const RequestPositionSync = () => {
+			const RequestPositionSync = async () => {
 				const startedAt = performance.now()
-				const isLocallyPlaying = SpotifyPlatform.PlaybackAPI._isLocal
-				return (
-					/*
-						IsLocal determines whether or not we are playing on the current device
-						OR if we are playing on a different device (device switching).
+				try {
+					const isLocallyPlaying = SpotifyPlatform?.PlaybackAPI?._isLocal ?? true
+					let position: number | undefined
+					if (isLocallyPlaying && SpotifyPlatform?.PlayerAPI?._contextPlayer?.getPositionState) {
+						const res = await (SpotifyPlatform.PlayerAPI._contextPlayer.getPositionState({}) as Promise<{ position: bigint }>)
+						position = Number(res.position)
+					} else if (!isLocallyPlaying && SpotifyPlatform?.PlayerAPI?._state) {
+						if (canSyncNonLocalTimestamp > 0 && SpotifyPlatform?.PlayerAPI?._contextPlayer?.resume) {
+							await SpotifyPlatform.PlayerAPI._contextPlayer.resume({})
+						}
+						canSyncNonLocalTimestamp = Math.max(0, canSyncNonLocalTimestamp - 1)
+						position = IsPlaying
+							? (SpotifyPlatform.PlayerAPI._state.positionAsOfTimestamp + (Date.now() - SpotifyPlatform.PlayerAPI._state.timestamp))
+							: SpotifyPlatform.PlayerAPI._state.positionAsOfTimestamp
+					}
 
-						For local playback, we can use the Clients C++ Transport to get the current position.
-						Otherwise, we have to request for a timestamp resync to get the current position.
-					*/
-					isLocallyPlaying
-					? (
-						(SpotifyPlatform.PlayerAPI._contextPlayer.getPositionState({}) as Promise<{position: bigint}>)
-						.then(({ position }) => ({ StartedSyncAt: startedAt, Position: Number(position) }))
-					)
-					: (
-						(
-							(canSyncNonLocalTimestamp > 0) ? SpotifyPlatform.PlayerAPI._contextPlayer.resume({})
-							: Promise.resolve()
-						)
-						.then(
-							() => {
-								canSyncNonLocalTimestamp = Math.max(0, (canSyncNonLocalTimestamp - 1))
-								return (
-									IsPlaying ? {
-										StartedSyncAt: startedAt,
-										Position: (
-											SpotifyPlatform.PlayerAPI._state.positionAsOfTimestamp
-											+ (Date.now() - SpotifyPlatform.PlayerAPI._state.timestamp)
-										)
-									}
-									: { Position: SpotifyPlatform.PlayerAPI._state.positionAsOfTimestamp }
-								)
-							}
-						)
-					)
-				)
-				.then((position: SyncedPostiion) => syncedPosition = position )
-				.then(
-					() => PlayerMaid.Give(
-						Timeout(
-							(
-								isLocallyPlaying ? (1 / 30)
-								: (
-									(canSyncNonLocalTimestamp === 0) ? (1 / 30)
-									: syncTimings[syncTimings.length - canSyncNonLocalTimestamp]
-								)
-							), RequestPositionSync
-						),
-						"TimestampPositionSync"
-					)
+					if (position === undefined || isNaN(position)) {
+						position = SpotifyPlayer?.getProgress?.() ?? 0
+					}
+					syncedPosition = { StartedSyncAt: startedAt, Position: position }
+				} catch (_) {
+					const progress = SpotifyPlayer?.getProgress?.() ?? 0
+					syncedPosition = { StartedSyncAt: startedAt, Position: progress }
+				}
+
+				PlayerMaid.Give(
+					Timeout(1 / 30, RequestPositionSync),
+					"TimestampPositionSync"
 				)
 			}
 

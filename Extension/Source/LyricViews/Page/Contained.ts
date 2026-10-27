@@ -60,7 +60,7 @@ export default class PageView implements Giveable {
 	// Constructor
 	constructor(page: HTMLDivElement, isLegacy: boolean) {
 		// Determine our last-page
-		const lastPage = SpotifyHistory.entries[SpotifyHistory.entries.length - 2]
+		const lastPage = SpotifyHistory?.entries?.[SpotifyHistory.entries.length - 2]
 		if ((lastPage !== undefined) && (lastPage.pathname.startsWith("/BeautifulLyrics") === false)) {
 			LastPageLocation = lastPage.pathname
 		}

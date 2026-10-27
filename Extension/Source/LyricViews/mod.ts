@@ -41,14 +41,42 @@ const LoadingLyricsCard = `<div class="LoadingLyricsCard Loading"></div>`
 // DOM Search Constants
 const CurrentMainPage = ".Root__main-view .main-view-container div[data-overlayscrollbars-viewport]"
 const LegacyMainPage = ".Root__main-view .main-view-container .os-host"
-const RightSidebar = ".Root__right-sidebar"
-const ContentsContainer = "aside, section.main-buddyFeed-container"
-const CardInsertAnchor = ".main-nowPlayingView-nowPlayingWidget, canvas"
-const SpotifyCardViewQuery = ".main-nowPlayingView-section:not(:is(#BeautifulLyrics-CardView)):has(.main-nowPlayingView-lyricsTitle)"
+const FallbackMainPage = ".Root__main-view .main-view-container"
+const RightSidebar = ".Root__right-sidebar, aside[aria-label='Now playing view' i], aside.NowPlayingView, aside[data-testid='now-playing-view']"
+const ContentsContainer = "aside, section.main-buddyFeed-container, div[data-testid='now-playing-widget'], .main-nowPlayingView-content"
+const CardInsertAnchor = ".main-nowPlayingView-nowPlayingWidget, canvas, [data-testid='now-playing-widget']"
+const SpotifyCardViewQuery = ".main-nowPlayingView-section:not(:is(#BeautifulLyrics-CardView)):has(.main-nowPlayingView-lyricsTitle), section:not(:is(#BeautifulLyrics-CardView)):has([aria-label*='lyrics' i])"
 
 // Store our internal utilities
-let SetPlaybarPageIconActiveState: (isActive: boolean) => void
+let SetPlaybarPageIconActiveState: (isActive: boolean) => void = () => {}
 let ActivePageView: (ContainedPageView | FullscreenPageView | undefined)
+
+// Surface a stage failure instead of letting it silently reject the chain
+const ReportStageFailure = (stage: string, error: unknown) => {
+	console.error(`Beautiful Lyrics: ${stage} failed to start.`, error)
+}
+
+// Find the element our contained page-view should be parented to. Spotify has
+// reshuffled this markup across releases, so we try each known container before
+// giving up rather than leaving the user with a button that does nothing.
+const SearchForPageContainer = (): [HTMLDivElement, boolean] | undefined => {
+	for (const [query, isLegacy] of [
+		[CurrentMainPage, false],
+		[LegacyMainPage, true],
+		[FallbackMainPage, false],
+		[".Root__main-view main", false],
+		[".Root__main-view", false],
+		["main[data-testid='main-view']", false],
+		["main", false]
+	] as [string, boolean][]) {
+		const found = document.querySelector<HTMLDivElement>(query)
+		if (found !== null) {
+			return [found, isLegacy]
+		}
+	}
+
+	return undefined
+}
 
 // Wait for Spotify to start our processing
 OnSpotifyReady
@@ -130,6 +158,9 @@ OnSpotifyReady
 			ViewMaid.Give(Timeout(1, CheckForSongExistence))
 		}
 	}
+)
+.catch( // Playbar Icons must never block the stages below them
+	error => ReportStageFailure("Playbar Icons", error)
 )
 .then( // Right Side-bar/Card View
 	() => {
@@ -252,67 +283,117 @@ OnSpotifyReady
 		CheckForSidebar()
 	}
 )
+.catch( // The card-view pulls in WebGL, which can fail outright on some machines
+	error => ReportStageFailure("Right Side-bar/Card View", error)
+)
 .then( // Location Handler
 	() => {
-		let pageContainer: HTMLDivElement
+		let pageContainer: (HTMLDivElement | undefined)
 		let pageContainerIsLegacy = false
+
+		const TryResolvePageContainer = (): boolean => {
+			if (pageContainer !== undefined) {
+				return true
+			}
+
+			const resolved = SearchForPageContainer()
+			if (resolved === undefined) {
+				return false
+			}
+
+			;[pageContainer, pageContainerIsLegacy] = resolved
+			return true
+		}
+
+		const RenderContainedPageView = () => {
+			ViewMaid.Clean("PageViewRetry")
+			SetPlaybarPageIconActiveState(true)
+			ActivePageView = ViewMaid.Give(new ContainedPageView(pageContainer!, pageContainerIsLegacy), "PageView")
+			ActivePageView.Closed.Connect(() => SetPlaybarPageIconActiveState(false))
+			ActivePageView.Closed.Connect(() => ActivePageView = undefined)
+		}
+
+		// We can land on our page before the container exists, so keep looking
+		// and render as soon as there is something to parent our view to
+		const KeepLookingForPageContainer = () => {
+			if (SpotifyHistory.location.pathname !== "/BeautifulLyrics/Page") {
+				return
+			}
+
+			if (TryResolvePageContainer() === false) {
+				ViewMaid.Give(Defer(KeepLookingForPageContainer), "PageViewRetry")
+				return
+			}
+
+			RenderContainedPageView()
+		}
 
 		const HandleSpotifyLocation = (location: HistoryLocation) => {
 			// Remove our previous page-view
 			ViewMaid.Clean("PageView")
-	
-			// Now handle our page-view
-			if (location.pathname === "/BeautifulLyrics/Page") {
-				SetPlaybarPageIconActiveState(true)
-				ActivePageView = ViewMaid.Give(new ContainedPageView(pageContainer, pageContainerIsLegacy), "PageView")
-				ActivePageView.Closed.Connect(() => SetPlaybarPageIconActiveState(false))
-				ActivePageView.Closed.Connect(() => ActivePageView = undefined)
-			} else if (location.pathname === "/BeautifulLyrics/Fullscreen") {
-				ActivePageView = ViewMaid.Give(new FullscreenPageView(location.state.FromPlaybar), "PageView")
-				ActivePageView.Closed.Connect(() => ActivePageView = undefined)
+			ViewMaid.Clean("PageViewRetry")
+
+			try {
+				// Now handle our page-view
+				if (location.pathname === "/BeautifulLyrics/Page") {
+					if (TryResolvePageContainer()) {
+						RenderContainedPageView()
+					} else {
+						KeepLookingForPageContainer()
+					}
+				} else if (location.pathname === "/BeautifulLyrics/Fullscreen") {
+					ActivePageView = ViewMaid.Give(new FullscreenPageView(location.state?.FromPlaybar), "PageView")
+					ActivePageView.Closed.Connect(() => ActivePageView = undefined)
+				}
+			} catch (error) {
+				ViewMaid.Clean("PageView")
+				ViewMaid.Clean("PageViewRetry")
+				SetPlaybarPageIconActiveState(false)
+				ActivePageView = undefined
+				ReportStageFailure("Page View", error)
 			}
 		}
 
-		// Wait until we find our MainPageContainer
-		const SearchDOM = () => {
-			// Go through each container possibility
-			let possibleContainer = document.querySelector<HTMLDivElement>(CurrentMainPage) ?? undefined
-			let possiblyLegacy = false
-			if (possibleContainer === undefined) {
-				possibleContainer = document.querySelector<HTMLDivElement>(LegacyMainPage) ?? undefined
-				possiblyLegacy = true
+		// Subscribe immediately. Navigation must never wait on us having found a
+		// container, otherwise pressing the playbar button appears to do nothing.
+		ViewMaid.Give(SpotifyHistory.listen(HandleSpotifyLocation))
+		HandleSpotifyLocation(SpotifyHistory.location)
+	}
+)
+.catch( // Navigation is the most important stage, so never let it be skipped
+	error => ReportStageFailure("Location Handler", error)
+)
+.then( // Spotify Fullscreen Button Removal
+	() => {
+		const HideFullscreenButton = (controlsContainer: Element) => {
+			for (const element of controlsContainer.children) {
+				if (
+					(element.getAttribute("data-testid") === "fullscreen-mode-button"
+					 || element.getAttribute("data-sub-component") === "fullscreen-button"
+					 || element.getAttribute("aria-label")?.toLowerCase().includes("fullscreen"))
+					&& (element.id !== "BeautifulLyricsFullscreenButton")
+				) {
+					(element as HTMLElement).style.display = "none"
+				}
 			}
+		}
 
-			// If we still have no container we need to wait again for it
-			if (possibleContainer === undefined) {
-				ViewMaid.Give(Defer(SearchDOM))
+		let attempts = 0
+		const SearchDOM = () => {
+			const controlsContainer = document.querySelector<HTMLElement>(".main-nowPlayingBar-extraControls")
+			if (controlsContainer === null) {
+				if (++attempts < 50) {
+					ViewMaid.Give(Defer(SearchDOM), "FullscreenButtonRemoval")
+				}
 			} else {
-				pageContainer = possibleContainer
-				pageContainerIsLegacy = possiblyLegacy
-				HandleSpotifyLocation(SpotifyHistory.location)
-				ViewMaid.Give(SpotifyHistory.listen(HandleSpotifyLocation))
+				HideFullscreenButton(controlsContainer)
+				const observer = ViewMaid.Give(new MutationObserver(() => HideFullscreenButton(controlsContainer)))
+				observer.observe(controlsContainer, { childList: true, subtree: true })
 			}
 		}
 		SearchDOM()
 	}
 )
-.then( // Spotify Fullscreen Button Removal
-	() => {
-		const SearchDOM = () => {
-			const controlsContainer = document.querySelector<HTMLButtonElement>(".main-nowPlayingBar-extraControls")
-			if (controlsContainer === null) {
-				ViewMaid.Give(Defer(SearchDOM))
-			} else {
-				for (const element of controlsContainer.children) {
-					if (
-						(element.attributes.getNamedItem("data-testid")?.value === "fullscreen-mode-button")
-						&& (element.id !== "BeautifulLyricsFullscreenButton")
-					) {
-						(element as HTMLElement).style.display = "none"
-					}
-				}
-			}
-		}
-		SearchDOM()
-	}
+.catch(
+	error => ReportStageFailure("Spotify Fullscreen Button Removal", error)
 )

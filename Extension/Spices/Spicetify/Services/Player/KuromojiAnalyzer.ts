@@ -2,9 +2,13 @@
 import type KuromojiType from "npm:@types/kuromoji@^0.1.3"
 import type { Tokenizer, IpadicFeatures } from "npm:@types/kuromoji@^0.1.3"
 
-// Language Module
-import ImportedKuromoji from "./Kuromoji.js"
-const Kuromoji = (ImportedKuromoji as unknown as typeof KuromojiType)
+// Language Module - Kuromoji.js is a UMD bundle that exports to global.kuromoji
+import "./Kuromoji.js"
+// deno-lint-ignore no-explicit-any
+const Kuromoji = (globalThis as any).kuromoji as typeof KuromojiType
+
+// CORS proxy for kuromoji dictionaries (GitHub raw serves with CORS)
+const KUROMOJI_DICT_BASE = "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/"
 
 // Export our Kuromoji Analyzer (required format so we can be passed into Kuroshiro)
 let Analyzer: (Tokenizer<IpadicFeatures> | undefined)
@@ -17,7 +21,7 @@ export const init = (): Promise<void> => {
 		(resolve, reject) => {
 			Kuromoji.builder(
 				{
-					dicPath: "https://kuromoji.socalifornian.live"
+					dicPath: KUROMOJI_DICT_BASE
 				}
 			).build(
 				(error, analyzer) => {

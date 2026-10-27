@@ -24,11 +24,6 @@ const PopupElement = `
 		<span class="SubTitle">Drastically less GPU/CPU Usage and Bug Fixes!</span>
 		<a class="TechnicalExplanation">Check out the Technical Explanation</a>
 		<div class="VideoGradient"></div>
-		<video
-			autoplay loop muted playsinline
-			class="BackgroundRenderingImprovements"
-			src="https://images.socalifornian.live/BetterBackgroundRenderingPerformance.webm"
-		></video>
 	</div>
 	<div class="PopupButtons">
 		<button class="DiscordButton">
