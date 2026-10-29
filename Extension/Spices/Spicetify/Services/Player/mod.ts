@@ -30,7 +30,12 @@ import {
 	FetchLRCLIBLyrics, FetchLRCLIBByISRC, FetchDirectSpotifyLyrics,
 	FetchLyricsOvh,
 	FetchBetterLyricsUnison, FetchBetterLyricsUnisonLine,
-	FetchBiniLyrics, FetchBiniLyricsLine
+	FetchBiniLyrics, FetchBiniLyricsLine,
+	FetchMusixmatchLyrics, FetchMusixmatchSearchLyrics,
+	FetchAMLLDBLyrics, FetchGeniusLyrics, FetchDeezerLyrics, FetchYouTubeLyrics,
+	FetchNeteaseLyrics, FetchQQMusicLyrics, FetchKugouLyrics,
+	FetchBetterLyricsTTML, FetchBetterLyricsKugou, FetchBetterLyricsLegacy, FetchBetterLyricsQQ,
+	FetchTxwLyrics
 } from "./Providers.ts"
 
 // Re-export some useful types
@@ -417,8 +422,39 @@ export const SetSelectedProvider = (provider: string): void => {
 
 export let SongLyrics: (TransformedLyrics | undefined) = undefined
 export let HaveSongLyricsLoaded: boolean = false
+const ResolveAppleMusicId = (trackName: string, artistName?: string, duration?: number): Promise<{ id: string; title: string } | undefined> => {
+	if (!trackName || trackName.length === 0) return Promise.resolve(undefined)
+	const searchUrl = new URL("https://itunes.apple.com/search")
+	searchUrl.searchParams.set("term", `${trackName} ${artistName ?? ""}`.trim())
+	searchUrl.searchParams.set("media", "music")
+	searchUrl.searchParams.set("entity", "song")
+	searchUrl.searchParams.set("limit", "10")
+
+	const controller = new AbortController()
+	const timeout = globalThis.setTimeout(() => controller.abort(), 3000)
+	return fetch(searchUrl.toString(), { signal: controller.signal })
+		.then(response => (!response.ok ? undefined : response.json()))
+		.then((payload?: { results?: { trackId?: number; trackName?: string; trackTimeMillis?: number }[] }) => {
+			const results = Array.isArray(payload?.results) ? payload.results : []
+			const lowerTrackName = trackName.toLowerCase()
+			const matched = results.find(result => {
+				if (result.trackId === undefined || result.trackName === undefined) return false
+				const resultTrackName = result.trackName.toLowerCase()
+				return (
+					(resultTrackName.includes(lowerTrackName) || lowerTrackName.includes(resultTrackName)) &&
+					(!Number.isFinite(duration) || (duration ?? 0) <= 0 || result.trackTimeMillis === undefined || Math.abs((result.trackTimeMillis / 1000) - (duration ?? 0)) <= 5)
+				)
+			})
+			return matched?.trackId !== undefined && matched.trackName !== undefined
+				? { id: String(matched.trackId), title: matched.trackName }
+				: undefined
+		})
+		.catch(() => undefined)
+		.finally(() => globalThis.clearTimeout(timeout))
+}
+
 const BuildLyricsRequestURL = async (song: StreamedSongMetadata): Promise<string> => {
-	const url = new URL(`https://beautiful-lyrics.socalifornian.live/lyrics/${encodeURIComponent(song.Id)}`)
+	const url = new URL(`https://lyrics.txw.qzz.io/lyrics/${encodeURIComponent(song.Id)}`)
 	const track = SpotifyPlayer.data?.item
 	const metadata = track?.metadata as unknown as (TrackMetadata | undefined)
 
@@ -457,6 +493,17 @@ const BuildLyricsRequestURL = async (song: StreamedSongMetadata): Promise<string
 			url.searchParams.set("isrc", isrc)
 		}
 	} catch { /* cache miss, proceed without ISRC */ }
+
+	// Attach Apple Music ID if resolvable client-side
+	try {
+		if (trackName !== undefined && trackName.length > 0) {
+			const appleMusic = await ResolveAppleMusicId(trackName, artistNames[0], song.Duration)
+			if (appleMusic) {
+				url.searchParams.set("apple_id", appleMusic.id)
+				url.searchParams.set("apple_title", appleMusic.title)
+			}
+		}
+	} catch { /* proceed without apple_id */ }
 
 	return url.toString()
 }
@@ -509,6 +556,33 @@ const FetchProviderWithMeta = (fetchFn: (artist: string, title: string, duration
 const UseSelectedProvider = (provider: string, song: StreamedSongMetadata): Promise<ProviderLyrics | false> => {
 	let providerPromise: Promise<ProviderLyrics | undefined>
 	switch (provider) {
+		case "txw":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+			})
+			break
+		case "spicylyrics":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+			})
+			break
+		case "musixmatch":
+			providerPromise = FetchMusixmatchLyrics(song.Id).then(res => {
+				if (res !== undefined) return res
+				return FetchProviderWithMeta((artist, title) => {
+					let cleanTitle = title
+					for (const filter of SongNameFilters) cleanTitle = cleanTitle.replace(filter, "")
+					return FetchMusixmatchSearchLyrics(artist, cleanTitle.trim(), song.Duration)
+				})
+			})
+			break
+		case "musixmatch-search":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				let cleanTitle = title
+				for (const filter of SongNameFilters) cleanTitle = cleanTitle.replace(filter, "")
+				return FetchMusixmatchSearchLyrics(artist, cleanTitle.trim(), song.Duration)
+			})
+			break
 		case "lrclib":
 			providerPromise = FetchProviderWithMeta((artist, title) => {
 				let cleanTitle = title
@@ -519,8 +593,73 @@ const UseSelectedProvider = (provider: string, song: StreamedSongMetadata): Prom
 		case "spotify":
 			providerPromise = FetchDirectSpotifyLyrics(song.Id, song.InternalId)
 			break
-		case "lyricsovh":
-			providerPromise = FetchProviderWithMeta(FetchLyricsOvh)
+		case "amlldb":
+			providerPromise = FetchAMLLDBLyrics(song.Id).then(res => {
+				if (res !== undefined) return res
+				return FetchProviderWithMeta((artist, title) => {
+					return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+				})
+			})
+			break
+		case "deezer":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				return FetchDeezerLyrics(artist, title, song.Duration).then(res => {
+					if (res !== undefined) return res
+					return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+				})
+			}, song.Duration)
+			break
+		case "youtube":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				return FetchYouTubeLyrics(artist, title).then(res => {
+					if (res !== undefined) return res
+					return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+				})
+			})
+			break
+		case "genius":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				return FetchGeniusLyrics(artist, title).then(res => {
+					if (res !== undefined) return res
+					return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+				})
+			})
+			break
+		case "netease":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				return FetchNeteaseLyrics(artist, title).then(res => {
+					if (res !== undefined) return res
+					return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+				})
+			})
+			break
+		case "qq":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				return FetchQQMusicLyrics(artist, title).then(res => {
+					if (res !== undefined) return res
+					return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+				})
+			})
+			break
+		case "kugou":
+			providerPromise = FetchProviderWithMeta((artist, title) => {
+				return FetchKugouLyrics(artist, title).then(res => {
+					if (res !== undefined) return res
+					return FetchTxwLyrics(song.Id, title, artist, undefined, song.Duration)
+				})
+			})
+			break
+		case "betterlyrics":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsTTML)
+			break
+		case "betterlyrics-kugou":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsKugou)
+			break
+		case "betterlyrics-legacy":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsLegacy)
+			break
+		case "betterlyrics-qq":
+			providerPromise = FetchProviderWithMeta(FetchBetterLyricsQQ)
 			break
 		case "betterlyrics-unison":
 			providerPromise = FetchProviderWithMeta(FetchBetterLyricsUnison)
@@ -533,6 +672,9 @@ const UseSelectedProvider = (provider: string, song: StreamedSongMetadata): Prom
 			break
 		case "bini-line":
 			providerPromise = FetchProviderWithMeta(FetchBiniLyricsLine)
+			break
+		case "lyricsovh":
+			providerPromise = FetchProviderWithMeta(FetchLyricsOvh)
 			break
 		default:
 			providerPromise = Promise.resolve(undefined)
@@ -600,9 +742,22 @@ const LoadSongLyrics = () => {
 					(
 						GetSpotifyAccessToken()
 						.then(
-							async (): Promise<Response | undefined> => {
-								// Author's lyrics backend is offline; skip directly to fallback providers
-								return undefined
+							async (accessToken): Promise<Response | undefined> => {
+								const controller = new AbortController()
+								const timeout = globalThis.setTimeout(() => controller.abort(), 7000)
+								const requestUrl = await BuildLyricsRequestURL(songAtUpdate)
+								return fetch(
+									requestUrl,
+									{
+										method: "GET",
+										signal: controller.signal,
+										headers: {
+											Authorization: `Bearer ${accessToken}`,
+											"X-Spotify-App-Platform": SpotifyPlatform?.PlatformData?.app_platform ?? "Linux",
+											"X-Spotify-App-Version": SpotifyPlatform?.version ?? "1.0.0"
+										}
+									}
+								).finally(() => globalThis.clearTimeout(timeout))
 							}
 						)
 						.then(
@@ -649,11 +804,19 @@ const LoadSongLyrics = () => {
 								if (firstArtist.length === 0) return undefined
 							// Fire top providers in parallel, take the first success
 							return raceProviders([
+								() => FetchMusixmatchLyrics(songAtUpdate.Id),
 								() => FetchLRCLIBLyrics(firstArtist, cleanTitle.trim(), songAtUpdate.Duration),
 								() => FetchBetterLyricsUnison(firstArtist, cleanTitle),
 								() => FetchBiniLyrics(firstArtist, cleanTitle),
 								() => FetchLyricsOvh(firstArtist, cleanTitle),
 							], 4000)
+							}
+						)
+						.then(
+							(providerLyrics) => {
+								if (providerLyrics !== undefined) return providerLyrics
+								if (GetUseFallbackProviders() === false) return undefined
+								return withTimeout(FetchProviderWithMeta(FetchMusixmatchSearchLyrics, songAtUpdate.Duration), 4000)
 							}
 						)
 						.then(

@@ -94,21 +94,81 @@ export const ToggleUseFallbackProviders = (enabled: boolean): void => {
 }
 
 // Provider Selection
-export type ProviderOption = "auto" | "lrclib" | "spotify" | "lyricsovh" | "betterlyrics-unison" | "betterlyrics-unison-line" | "bini" | "bini-line"
+export type ProviderOption =
+	| "auto"
+	| "txw"
+	| "spicylyrics"
+	| "musixmatch"
+	| "musixmatch-search"
+	| "spotify"
+	| "amlldb"
+	| "qq"
+	| "kugou"
+	| "netease"
+	| "deezer"
+	| "youtube"
+	| "genius"
+	| "lrclib"
+	| "betterlyrics-unison"
+	| "betterlyrics-unison-line"
+	| "betterlyrics"
+	| "betterlyrics-kugou"
+	| "betterlyrics-legacy"
+	| "betterlyrics-qq"
+	| "bini"
+	| "bini-line"
+	| "lyricsovh"
+
 export const ProviderOptions: ProviderOption[] = [
-	"auto", "lrclib", "spotify", "lyricsovh",
-	"betterlyrics-unison", "betterlyrics-unison-line",
-	"bini", "bini-line"
+	"auto",
+	"txw",
+	"spicylyrics",
+	"musixmatch",
+	"musixmatch-search",
+	"spotify",
+	"amlldb",
+	"qq",
+	"kugou",
+	"netease",
+	"deezer",
+	"youtube",
+	"genius",
+	"lrclib",
+	"betterlyrics-unison",
+	"betterlyrics-unison-line",
+	"betterlyrics",
+	"betterlyrics-kugou",
+	"betterlyrics-legacy",
+	"betterlyrics-qq",
+	"bini",
+	"bini-line",
+	"lyricsovh",
 ]
+
 export const ProviderLabels: Record<ProviderOption, string> = {
-	auto: "Auto (Default)",
-	lrclib: "LRCLIB",
+	auto: "Auto (Default - lyrics.txw.qzz.io)",
+	txw: "Beautiful Lyrics Reborn (txw.qzz.io)",
+	spicylyrics: "SpicyLyrics",
+	musixmatch: "Musixmatch",
+	"musixmatch-search": "Musixmatch (Search)",
 	spotify: "Spotify",
-	lyricsovh: "Lyrics.ovh",
+	amlldb: "Apple Music / AMLLDB",
+	qq: "QQ Music (QQ 音乐)",
+	kugou: "Kugou (酷狗音乐)",
+	netease: "Netease (网易云音乐)",
+	deezer: "Deezer",
+	youtube: "YouTube",
+	genius: "Genius",
+	lrclib: "LRCLIB",
 	"betterlyrics-unison": "Better Lyrics Unison",
 	"betterlyrics-unison-line": "Better Lyrics Unison (LINE)",
+	betterlyrics: "BetterLyrics (TTML)",
+	"betterlyrics-kugou": "BetterLyrics (Kugou)",
+	"betterlyrics-legacy": "BetterLyrics (Legacy)",
+	"betterlyrics-qq": "BetterLyrics (QQ)",
 	bini: "BiniLyrics",
 	"bini-line": "BiniLyrics (LINE)",
+	lyricsovh: "Lyrics.ovh",
 }
 
 const SelectedProviderKey = "SelectedProvider"
